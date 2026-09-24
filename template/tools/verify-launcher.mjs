@@ -17,7 +17,7 @@
  *  10) 界面自检                     —— 真的把界面拉起来，验 DOM 画出来了、命令跑得通
  *  11) .cmd 可执行性                —— 真的把 cmd 拉起来跑一遍，验能跑通并正常退出
  *  12) tools/*.ps1 语法            —— param 必须位于首条语句，否则整个脚本解析不了
- *  13) 皮肤层自检判据（纯函数）      —— 主题层缺席时必须报「主题层未注入」这个真因，
+ *  13) 皮肤层：构建约定 + 自检判据（纯函数）—— 主题层缺席时必须报「主题层未注入」这个真因，
  *                                      而不是报一串"果"。纯函数、不碰 CDP、无副作用
  *
  * 项数会被 README / SKILL.md 引用（写成「N 项自检」）。改这一行或加减检查段时，
@@ -143,7 +143,7 @@ if (process.argv.includes("--list")) {
     "10  界面自检（会短暂拉起界面）",
     "11  .cmd 可执行性（会真跑一遍）",
     "12  tools/*.ps1 语法",
-    "13  皮肤层自检判据（纯函数，无副作用）",
+    "13  皮肤层：构建约定 + 自检判据（纯函数，无副作用）",
   ].forEach((l) => console.log(l));
   console.log("\n用法：node tools/verify-launcher.mjs [--only=1,7] [--list]");
   process.exit(0);
@@ -628,9 +628,48 @@ if (want(13)) {
       wrong.push({ why: "报遮挡时没指到 GLASS_SELECTORS（用户不知道该改哪）", got: occlNotes, must: [], mustNot: [] });
     }
 
-    console.log(`13) 皮肤层自检判据：${cases.length + 2} 条用例 ｜ 失败 ${wrong.length} 条`);
+    /*
+     * 附加 3：页面级外壳（CLEAR_SELECTORS）必须「清成透明、且不给毛玻璃」。
+     *
+     * 2026-09-24：先把它按玻璃面处理（加进 GLASS_SELECTORS），结果它是**满屏的
+     * 祖先容器** —— 加 backdrop-filter 把整个视口的壁纸都糊掉，还和子层
+     * （.cr-agent__body）自己的毛玻璃叠成双重模糊。用户的评价是「越改越差」。
+     * 正解是把它清成 transparent 且不参与毛玻璃。这条断言既锁住正解，
+     * 也防止有人图省事又把它搬回 GLASS_SELECTORS。
+     */
+    const skinCss = typeof cdp.buildSkinCss === "function"
+      ? cdp.buildSkinCss({ imagePath: "E:\\x\\a.jpg", preset: "medium" })
+      : "";
+    const noComment = skinCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    const hits = (noComment.match(/teams-grid-scroll-content/g) || []).length;
+    const at = noComment.indexOf(".teams-grid-scroll-content");
+    const seg = at >= 0 ? noComment.slice(at, noComment.indexOf("}", at) + 1) : "";
+    /*
+     * 「没启用毛玻璃」不等于「不含 backdrop-filter 字样」—— 正解里本来就写着
+     * backdrop-filter: none。这里踩了两层坑：
+     *   ① 第一版写 !seg.includes("backdrop-filter") → **正解被自己判成错的**；
+     *   ② 改成 /backdrop-filter:\s*(?!none)/ 还是错 —— \s* 可以回溯成 0 个空格，
+     *      于是 (?!none) 检的是那个空格，而不是 none。
+     * 所以干脆把值取出来逐个判：只要有一个不是 none，就算启用了。
+     */
+    const blurEnabled = [...seg.matchAll(/-?backdrop-filter:\s*([^;!]+)/g)]
+      .some((m) => m[1].trim() !== "none");
+    const shellOk =
+      hits === 1 &&                                // 只出现在一处（CLEAR 组），没被搬回玻璃组
+      seg.includes("background: transparent") &&   // 真的清掉了底色
+      !blurEnabled;                                // 且没有启用毛玻璃
+    if (!shellOk) {
+      wrong.push({
+        why: "页面级外壳 .teams-grid-scroll-content 的处置不对：应只出现在 CLEAR 组、" +
+             "background: transparent、且**不带** backdrop-filter",
+        got: `出现 ${hits} 次 ｜ 片段：${seg.slice(0, 170) || "(没找到)"}`,
+        must: [], mustNot: [],
+      });
+    }
+
+    console.log(`13) 皮肤层：构建约定 + 自检判据：${cases.length + 3} 条用例 ｜ 失败 ${wrong.length} 条`);
     wrong.length === 0
-      ? ok("判据在主题层缺席时报出真因、且不误报果；遮挡时能报出「看不见」；各条分支均按预期命中")
+      ? ok("判据在主题层缺席时报出真因、不误报果；遮挡能报出「看不见」；页面级外壳清透明且无毛玻璃")
       : no("自检判据回归了：" + wrong.map((c) =>
           `${c.why}【实报：${c.got || "(无)"}】`).join(" / "));
   }

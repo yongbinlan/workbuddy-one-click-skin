@@ -118,7 +118,9 @@ export const PRESET_ALIAS = {
  *   .cr-input-container   6.5%
  *   .sidebar-next         右侧详情面板（会话切换时出现）
  *   .cr-widget-card       卡片式回复（出现时才有）
- *   .teams-grid-scroll-content  「工作区 / 团队」网格视图（2026-09-24 补）
+ *
+ * ⚠️ 这里只放**薄薄的结构面**。整屏的页面级外壳放下面 CLEAR_SELECTORS ——
+ * 两者的处理方式完全不同，放错了会"越改越差"（2026-09-24 实测踩过）。
  */
 const GLASS_SELECTORS = [
   // 第一、二条镜像 build-theme.mjs ADAPTER 的选择器（同为 (0,4,1)），靠"注入在后"取胜；
@@ -129,16 +131,29 @@ const GLASS_SELECTORS = [
   ".cr-input-container",
   ".sidebar-next",
   ".cr-widget-card",
-  /* 「工作区 / 团队」网格视图的滚动容器：实测 1920×1020 = **97.1% 视口**，
-     底色 rgb(20,20,20) **完全不透明** —— 它一挡，壁纸在整个屏幕上一点都看不到。
-     它是**视图级**容器：不切到那个视图就测不出来，所以上面那份实测清单里一直没有它。
-     2026-09-24 由「提示已生效、但界面没变」这个反馈 + diag-occluders 抓出来
-     （当时第 1 名就是它，而玻璃层其实是生效的 —— 见下条注释）。
-     ⚠️ 这类"只在某个视图里出现"的全屏容器是**成批**存在的：换一个页面（技能 /
-     定时任务 / 资料库）就可能冒出一个新的。所以自检里加了一条遮挡检测（见
-     checkWallpaperState 的 occluders），别再让"注入成功但看不见"静默通过。 */
+];
+
+/**
+ * 页面级外壳清单 —— **直接清成透明，并且不给毛玻璃**。
+ *
+ * 目前只有一条：「工作区 / 团队」网格视图的滚动容器。
+ * 实测 1920×1020 = **97.1% 视口**、rgb(20,20,20) **完全不透明** —— 它一挡，
+ * 壁纸在整个屏幕上一点都看不到（2026-09-24 用户报「提示已生效但皮肤没变」的真凶）。
+ *
+ * **为什么不能按玻璃面处理**（试过，结果比不修更糟）：
+ *   ① 它是**满屏的祖先容器**，加 backdrop-filter 会把**整个视口**的壁纸糊掉；
+ *   ② 它下面还有 .cr-agent__body 这类自带毛玻璃的子元素 → 祖先糊一遍、子元素再糊一遍，
+ *      叠成**双重模糊**。用户看到的是"一片模糊的暖色"，原话：「有是有，完全看不出来」。
+ *
+ * 它本来就只是个布局外壳，不该有底色 —— 清掉即可。
+ *
+ * ⚠️ 这类容器是**成批**的：切「技能 / 定时任务 / 资料库」视图都可能冒出新的。
+ *    自检的 occluders 采样专门盯它们（见 checkWallpaperState）。
+ */
+const CLEAR_SELECTORS = [
   ".teams-grid-scroll-content",
 ];
+
 
 /** 内容块清单（只轻调，保持高不透明以保可读） */
 const CONTENT_SELECTORS = [
@@ -201,6 +216,16 @@ ${GLASS_SELECTORS.map((s) => `${H} ${s}`).join(",\n")} {
   background: color-mix(in srgb, var(--heige-surface) var(--wb-skin-glass), transparent) !important;
   backdrop-filter: blur(var(--wb-skin-blur)) saturate(1.12) !important;
   -webkit-backdrop-filter: blur(var(--wb-skin-blur)) saturate(1.12) !important;
+}
+
+/* ③b 页面级外壳：清成透明。**刻意不给 backdrop-filter** ——
+   满屏的祖先容器一旦拥有毛玻璃，会把整个视口的壁纸糊掉，
+   还会和子层（.cr-agent__body 等）的毛玻璃叠成双重模糊。
+   2026-09-24 先按玻璃面处理过，用户的评价是「越改越差」。 */
+${CLEAR_SELECTORS.map((s) => `${H} ${s}`).join(",\n")} {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 /* 嵌套容器去重：.conversation-list 在 .conversation-sidebar 内，
