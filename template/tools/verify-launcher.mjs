@@ -2,7 +2,7 @@
 /**
  * verify-launcher.mjs — 启动器回归验证（改主题/改启动器/升级应用后跑这个）
  *
- * 覆盖 12 项，每项都是"做了/没做"的可核判定，不看主观感受：
+ * 覆盖 13 项，每项都是"做了/没做"的可核判定，不看主观感受：
  *   1) .vbs / .ps1 纯 ASCII 且无 BOM —— wscript 与 PowerShell 5.1 按系统
  *                                      ANSI 码页解析无 BOM 的文件，非 ASCII 会炸
  *   2) launcher.mjs 语法            —— node --check
@@ -17,11 +17,13 @@
  *  10) 界面自检                     —— 真的把界面拉起来，验 DOM 画出来了、命令跑得通
  *  11) .cmd 可执行性                —— 真的把 cmd 拉起来跑一遍，验能跑通并正常退出
  *  12) tools/*.ps1 语法            —— param 必须位于首条语句，否则整个脚本解析不了
+ *  13) 皮肤层自检判据（纯函数）      —— 主题层缺席时必须报「主题层未注入」这个真因，
+ *                                      而不是报一串"果"。纯函数、不碰 CDP、无副作用
  *
  * 项数会被 README / SKILL.md 引用（写成「N 项自检」）。改这一行或加减检查段时，
  * 记得同步那些数字 —— 它们曾经写着 14，实际只有 12。
  *
- * 用法：node tools/verify-launcher.mjs             跑全部 12 项
+ * 用法：node tools/verify-launcher.mjs             跑全部 13 项
  *       node tools/verify-launcher.mjs --only=1,7  只跑第 1、7 项
  *       node tools/verify-launcher.mjs --list      列出各项编号
  * 退出码：0 = 全通过，1 = 有失败项
@@ -31,10 +33,10 @@
  * 第 9 项会重建壁纸选择器产物，第 10 项会短暂拉起一次界面自检（不可见、自动收尸），
  * 第 11 项会真的跑一遍 launcher 下的 .cmd（用重定向输入喂一个回车）。
  * 有副作用的就是 6/9/10/11 这四项 —— 只想做纯静态检查时用
- * `--only=1,2,3,4,5,7,8,12`，不碰运行环境。
+ * `--only=1,2,3,4,5,7,8,12,13`，不碰运行环境。
  */
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -65,18 +67,67 @@ const ok = (m) => { console.log("✅ " + m); pass.push(m); };
 const no = (m) => { console.log("❌ " + m); fail.push(m); };
 
 // ---------- 只跑指定项：--only=1,7 ----------
-// 排障时不必把 12 项全跑一遍 —— 第 6/9/10/11 项会动真实环境（改主题包名、
+// 排障时不必把 13 项全跑一遍 —— 第 6/9/10/11 项会动真实环境（改主题包名、
 // 重建选择器、拉起界面、真跑 .cmd）。哪一环坏了就单跑哪一项，快且副作用最小。
 // 另：第 1 项这种纯文件检查在 CI / 无图形环境里也能单跑。
-const TOTAL = 12;
+const TOTAL = 13;
 const ONLY = (() => {
   const a = process.argv.slice(2).find((x) => x.startsWith("--only="));
   if (!a) return null;
-  const s = new Set(a.slice("--only=".length).split(",")
-    .map((x) => parseInt(x, 10)).filter((n) => Number.isInteger(n) && n >= 1 && n <= TOTAL));
-  return s.size ? s : null;
+  const raw = a.slice("--only=".length).split(",").map((x) => parseInt(x, 10));
+  const s = new Set(raw.filter((n) => Number.isInteger(n) && n >= 1 && n <= TOTAL));
+  /*
+   * 写了 --only 却一个合法项都没有 —— 必须**当场报错**，不能回退成"全跑"。
+   *
+   * 原来这里写的是 `return s.size ? s : null`，null 的语义是"不筛，全跑"。
+   * 于是 `--only=99`（手滑、或加减了检查段没改 TOTAL）会**把全部 13 项跑一遍** ——
+   * 包括 6/9/10/11 那四项会动真实环境的。用户明确说了"只跑这一项"，
+   * 实际却动了环境，而且输出里看不出发生过什么。
+   * 想少跑，结果跑得最多，这是最坏的一种"参数无效"。
+   */
+  if (!s.size) {
+    console.error(`✗ --only=${a.slice("--only=".length)} 里没有任何有效项号（有效范围 1-${TOTAL}）`);
+    console.error("  用法：--only=1,7 ｜ 想看全部编号：--list");
+    process.exit(1);
+  }
+  const dropped = raw.filter((n) => !Number.isInteger(n) || n < 1 || n > TOTAL);
+  if (dropped.length) console.log(`⚠️  --only 里这几个项号无效、已忽略：${dropped.join(", ")}（有效范围 1-${TOTAL}）`);
+  return s;
 })();
 const want = (n) => !ONLY || ONLY.has(n);
+
+/*
+ * 起不了子进程时，**先把话说在前面**。
+ *
+ * 这个脚本有 8 项要靠 spawn 子进程（node --check、wscript、powershell、.cmd）。
+ * 一旦 spawn 不可用（受限环境、安全策略、被拦），那些项会报 ❌ ——
+ * 而它们的含义是「**根本没跑**」，不是「跑起来坏了」。两者长得一模一样，
+ * 阅读的人只会照着红字去修一个根本没坏的东西。
+ *
+ * 本机 2026-09-24 实测：node 脚本内 spawn 同一个 node.exe 会被拦成 EBUSY，
+ * 连 --only 之外的无沙箱执行也一样。于是第 8 项一度报出
+ * 「18 个文件全部语法错误」—— 最吓人的一种假报告。
+ * 分不清「没通过」和「没跑」的判据，比没有判据更费时间。
+ */
+const CHILD_DEPENDENT = {
+  4: "端到端（wscript → vbs → node）",
+  5: "未双开",
+  6: "主题缺失降级",
+  9: "壁纸选择器产物",
+  10: "界面自检",
+  11: ".cmd 可执行性",
+};
+const SPAWN_PROBE = spawnSync(NODE, ["--version"], { encoding: "utf8", windowsHide: true });
+const CAN_SPAWN = SPAWN_PROBE.status === 0;
+if (!CAN_SPAWN) {
+  const why = (SPAWN_PROBE.error && (SPAWN_PROBE.error.code || SPAWN_PROBE.error.message)) || "未知原因";
+  const affected = Object.keys(CHILD_DEPENDENT).map(Number).filter((n) => want(n));
+  console.log(`⚠️  本环境起不了子进程（${why}）。`);
+  console.log("    下面这几项**根本没跑** —— 它们的 ❌ 不是真实故障，请勿照着修：");
+  console.log("      " + affected.map((n) => `${n} ${CHILD_DEPENDENT[n]}`).join(" ｜ "));
+  console.log("    真正做了判断的是不依赖子进程的那些：1 / 3 / 7 / 12 / 13（第 2、8 项会自报「未判」）。");
+  console.log("");
+}
 
 if (process.argv.includes("--list")) {
   [
@@ -92,6 +143,7 @@ if (process.argv.includes("--list")) {
     "10  界面自检（会短暂拉起界面）",
     "11  .cmd 可执行性（会真跑一遍）",
     "12  tools/*.ps1 语法",
+    "13  皮肤层自检判据（纯函数，无副作用）",
   ].forEach((l) => console.log(l));
   console.log("\n用法：node tools/verify-launcher.mjs [--only=1,7] [--list]");
   process.exit(0);
@@ -151,7 +203,18 @@ if (want(1)) {
 // ---------- 2) 语法 ----------
 if (want(2)) {
   const r = spawnSync(NODE, ["--check", LAUNCHER], { encoding: "utf8", windowsHide: true });
-  r.status === 0 ? ok("launcher.mjs 语法通过") : no("launcher.mjs 语法错误：" + (r.stderr || "").slice(0, 200));
+  /*
+   * 先区分「语法真错」与「校验根本跑不起来」。
+   * spawn 失败时 status 是 null、stdout/stderr 全空 —— 原来直接拿它当"语法错误"，
+   * 于是打印出「launcher.mjs 语法错误：」后面什么都没有。看的人只会以为文件坏了。
+   */
+  if (r.status === null) {
+    const why = (r.error && (r.error.code || r.error.message)) || "未知原因";
+    console.log(`2) launcher.mjs 语法校验跳过（起不了 node：${why}）`);
+    ok(`launcher.mjs 语法未判（校验不可用：${why}）`);
+  } else {
+    r.status === 0 ? ok("launcher.mjs 语法通过") : no("launcher.mjs 语法错误：" + (r.stderr || "").slice(0, 200));
+  }
 }
 
 // ---------- 3) 入口指向 ----------
@@ -257,12 +320,30 @@ if (want(8)) {
   const dir = path.join(ROOT, "tools");
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".mjs"));
   const bad = [];
+  let unavailable = "";
   for (const f of files) {
     const r = spawnSync(NODE, ["--check", path.join(dir, f)], { encoding: "utf8", windowsHide: true });
+    /*
+     * status === null 表示**子进程没起来**，不是"文件有语法错"。
+     * 原实现写的是 `if (r.status !== 0) bad.push(f)` —— 于是校验一旦不可用，
+     * 它会把**每一个**文件都列为语法错误，报出「18 个文件全部语法错误」。
+     * 这是最吓人的一种假报告：看的人会去逐个翻文件，而真正的原因在别处
+     * （本机实测到的是沙箱拦 spawn，错误码 EBUSY）。
+     * 分不清"没通过"和"没跑"的判据，比没有判据更费时间。
+     */
+    if (r.status === null) {
+      unavailable = (r.error && (r.error.code || r.error.message)) || "未知原因";
+      break;
+    }
     if (r.status !== 0) bad.push(f);
   }
   console.log(`8) tools/*.mjs 共 ${files.length} 个`);
-  bad.length === 0 ? ok(`${files.length} 个脚本语法全通过`) : no(`语法错误：${bad.join(", ")}`);
+  if (unavailable) {
+    ok(`${files.length} 个 mjs 语法未判（校验不可用：${unavailable}）`);
+    console.log(`   ⚠️ 起不了 node 子进程，本项**未做任何判断** —— 不要当成通过，也不要当成语法错误`);
+  } else {
+    bad.length === 0 ? ok(`${files.length} 个脚本语法全通过`) : no(`语法错误：${bad.join(", ")}`);
+  }
 }
 
 // ---------- 9) 壁纸选择器产物 ----------
@@ -431,6 +512,93 @@ if (want(12)) {
   bad.length === 0
     ? ok(`${files.length} 个 ps1 语法通过（param 均位于首条语句）`)
     : no("ps1 会被 PowerShell 拒绝解析，建/改快捷方式时会炸：" + bad.join(" / "));
+}
+
+// ---------- 13) 皮肤层自检判据（纯函数） ----------
+if (want(13)) {
+  /*
+   * 这一项守的是 2026-09-24 那次故障的**修法本身**：自检必须先判「主题层在不在」，
+   * 再判具体变量。顺序反了，报出来的一串全是"果"，会把排查的人引到错方向 ——
+   * 当时报的是「壁纸变量不是 file:// 路径」「档位变量未生效」，
+   * 读起来像"换壁纸功能坏了"，真因却是主题从头到尾没注入过。
+   *
+   * 为什么值得单开一项门禁：这段判据原来内联在 set-wallpaper.mjs 的
+   * applyState 里，夹在 CDP 调用与 console.log 之间，**没法单独验**。
+   * 想验"宿主类缺席"这条分支，得先经 CDP 把宿主类摘掉，可等下一个进程跑起来，
+   * 宿主类已经被应用自己补回去了（实测：有时 3 秒都不回，有时 3.6 秒才回），
+   * 窗口期根本抓不住 —— 于是那条分支写了很久，一次都没被真正验过。
+   * 判据不可独立验证，等于没有判据。所以它现在是一个纯函数，这里直接喂合成状态。
+   *
+   * 本项**不碰 CDP、不起子进程、无副作用**，所以在 CI 和受限环境里也能跑。
+   */
+  let cdp = null, loadErr = "";
+  try {
+    cdp = await import(pathToFileURL(path.join(ROOT, "tools", "lib-cdp.mjs")).href);
+  } catch (e) {
+    loadErr = (e && e.message) || String(e);
+  }
+
+  if (!cdp || typeof cdp.checkWallpaperState !== "function") {
+    no("lib-cdp.mjs 里没有 checkWallpaperState（判据被挪走或改名了）" +
+       (loadErr ? "：" + loadErr : ""));
+  } else {
+    const { checkWallpaperState, HOST_CLASS, WALLPAPER_STYLE_ID } = cdp;
+
+    /* 一份"一切正常"的基准状态，各用例只改自己关心的那一项 */
+    const base = {
+      hostClassPresent: true,
+      htmlClassHead: "dark cb-dark vscode-dark codedrobe-theme " + HOST_CLASS,
+      wallpaperStylePresent: true,
+      heroVarHead: 'url("file:///E:/x/a.jpg")',
+      heroVarIsFile: true,
+      heroVarIsBlob: false,
+      preset: { glass: "80%", rootX: "90%", blur: "12px" },
+      agentBodyBg: "color(srgb 0.07 0.08 0.11 / 0.8)",
+      agentBodyBlur: "blur(12px) saturate(1.12)",
+      strayStyles: [WALLPAPER_STYLE_ID],
+    };
+    const st = (o) => ({ ...base, ...o, preset: { ...base.preset, ...(o.preset || {}) } });
+    const probe = (s, opts) => checkWallpaperState(s, opts).problems.join(" ｜ ");
+
+    const cases = [
+      { why: "一切正常", got: probe(st({}), { imagePath: "E:\\x\\a.jpg" }), must: [], mustNot: [] },
+      {
+        // 核心用例：主题层缺席。必须报真因，且**不许**再报那些"果"
+        why: "宿主类缺席（真因必须点出来，且不许报果）",
+        got: probe(st({
+          hostClassPresent: false,
+          htmlClassHead: "dark cb-dark vscode-dark codedrobe-theme",
+          // 下面几项就是当年误报的"果"：全让它命中，看判据会不会被带跑
+          wallpaperStylePresent: true,
+          heroVarIsFile: false,
+          preset: { glass: "(unset)", rootX: "(unset)", blur: "(unset)" },
+          agentBodyBg: "rgba(0, 0, 0, 0)",
+        }), { imagePath: "E:\\x\\a.jpg" }),
+        must: ["主题层未注入"],
+        mustNot: ["壁纸变量不是 file://", "档位变量未生效", "注入没落地", "完全不透明"],
+      },
+      { why: "style 丢了", got: probe(st({ wallpaperStylePresent: false }), { imagePath: "a.jpg" }), must: ["注入没落地"], mustNot: ["主题层未注入"] },
+      { why: "档位变量为空", got: probe(st({ preset: { glass: "(unset)" } }), { imagePath: "a.jpg" }), must: ["档位变量未生效"], mustNot: ["主题层未注入"] },
+      { why: "对话区完全不透明", got: probe(st({ agentBodyBg: "color(srgb 0.07 0.08 0.11 / 1)" }), { imagePath: "a.jpg" }), must: ["完全不透明"], mustNot: ["主题层未注入"] },
+      { why: "多出一层重复注入", got: probe(st({ strayStyles: [WALLPAPER_STYLE_ID, "workbuddy-skin-wallpaper-old"] }), { imagePath: "a.jpg" }), must: ["重复注入层"], mustNot: ["主题层未注入"] },
+      { why: "未选自选壁纸（不该拿 file:// 烦人）", got: probe(st({ heroVarIsFile: false }), { imagePath: "" }), must: [], mustNot: ["file://"] },
+      { why: "读回为空", got: probe(null, {}), must: ["拿不到页面状态"], mustNot: ["主题层未注入"] },
+    ];
+
+    const wrong = cases.filter((c) =>
+      c.must.some((m) => !c.got.includes(m)) || c.mustNot.some((m) => c.got.includes(m)));
+
+    /* 附加：主题层缺席时，notes 必须给出**可执行**的下一步，而不只是说"坏了" */
+    const notes = checkWallpaperState(st({ hostClassPresent: false }), { imagePath: "a.jpg" }).notes.join("\n");
+    const actionable = notes.includes("注入皮肤.cmd") && notes.includes("_repoint-startup.ps1");
+    if (!actionable) wrong.push({ why: "主题层缺席时没给出可执行的补救", got: notes, must: [], mustNot: [] });
+
+    console.log(`13) 皮肤层自检判据：${cases.length + 1} 条用例 ｜ 失败 ${wrong.length} 条`);
+    wrong.length === 0
+      ? ok("判据在主题层缺席时报出真因、且不误报果；各条分支均按预期命中")
+      : no("自检判据回归了：" + wrong.map((c) =>
+          `${c.why}【实报：${c.got || "(无)"}】`).join(" / "));
+  }
 }
 
 console.log("\n================ 结果 ================");

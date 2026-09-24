@@ -33,7 +33,7 @@
 rem 1. 展开工程（把 <仓库目录> 换成你 clone 下来的路径）
 node <仓库目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 
-rem 2. 自检，12 项全绿才算装好
+rem 2. 自检，13 项全绿才算装好
 node D:\my\workbuddy-skin\tools\verify-launcher.mjs
 
 rem 3. 注入皮肤（WorkBuddy 需要在运行）
@@ -136,7 +136,7 @@ rem 3. 注入皮肤（WorkBuddy 需要在运行）
 ├── SKILL.md                  ← 给 AI Agent 读的操作手册（人也能看）
 ├── scripts\
 │   └── init.mjs              ← 一键初始化：展开工程 + 探测本机 + 生成产物
-├── template\                 ← 展开到用户机器上的工程模板（37 个文件）
+├── template\                 ← 展开到用户机器上的工程模板（38 个文件）
 │   ├── launcher\             ← 你唯一需要碰的目录（全是双击）
 │   ├── tools\                ← 全部脚本
 │   ├── themes\               ← 主题源（改配色改这里）
@@ -201,9 +201,9 @@ node <仓库目录>\scripts\init.mjs --dest <已有工程> --upgrade
 node <工程>\tools\verify-launcher.mjs
 ```
 
-12 项自检，会直接告诉你哪一环坏了。
+13 项自检，会直接告诉你哪一环坏了。
 
-平时不必全跑 —— 第 6 / 9 / 10 / 11 项会动真实环境（临时改主题包名、重建选择器、
+闲时不必全跑 —— 第 6 / 9 / 10 / 11 项会动真实环境（临时改主题包名、重建选择器、
 拉起界面、真跑一遍 `.cmd`）。哪一环坏了就单跑哪一项，快，而且动静最小：
 
 ```bat

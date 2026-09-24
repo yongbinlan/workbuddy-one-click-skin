@@ -19,6 +19,20 @@ import { pathToFileURL } from "node:url";
 /** 壁纸层 style 元素的 id（与 CodeDrobe 自己的主题 style 元素互不干扰） */
 export const WALLPAPER_STYLE_ID = "workbuddy-skin-wallpaper";
 
+/**
+ * CodeDrobe 主题挂在 <html> 上的宿主类。
+ *
+ * 皮肤层的**每一条**规则都以 `html.<这个类>` 开头 —— 也就是说皮肤层
+ * **依赖主题层先注入**。主题层不在时，整层规则会**静默失去匹配对象**：
+ * 注入照样报"成功"（<style> 确实插进去了），但读回全是空值。
+ *
+ * 2026-09-24 的真实故障就是这么来的：WorkBuddy 走的是开机自启（HKCU Run），
+ * 自启项直接拉 WorkBuddy.exe、绕过了启动器，于是 codedrobe apply 从未执行。
+ * 而当时自检报的是"壁纸变量不是 file:// 路径""档位变量未生效"—— 全是果不是因，
+ * 把人往错方向引了一整轮。所以自检必须**先单独判这个前提**。
+ */
+export const HOST_CLASS = "codedrobe-host-workbuddy";
+
 // ---------------- CDP 基础 ----------------
 
 export async function listTargets(port) {
@@ -138,7 +152,7 @@ export function buildSkinCss({ imagePath = null, preset = "medium", position = "
   const key = PRESET_ALIAS[preset] || "medium";
   const p = { ...(SKIN_PRESETS[key] || SKIN_PRESETS.medium), ...overrides };
   const pct = (v) => `${Number(v)}%`;
-  const H = "html.codedrobe-host-workbuddy";
+  const H = "html." + HOST_CLASS;
 
   const wpVar = imagePath
     ? `  /* 自选壁纸（file:// 直连，renderer 实测可加载，无需 base64） */\n` +
@@ -253,7 +267,25 @@ export async function readWallpaperState(port) {
     const body = document.querySelector('.cr-agent__body');
     const glassVar = rs ? rs.getPropertyValue('--wb-skin-glass').trim() : '';
     const bg = rs ? rs.backgroundImage : '';
+    /*
+     * 主题层的前提：宿主类在不在 <html> 上。
+     * 皮肤层所有规则都挂在它下面，它不在 = 整层静默失效 —— 必须单独读出来，
+     * 否则自检只会报出一堆"果"（变量为空），真因（主题层没注入）反而看不见。
+     */
+    const htmlEl = document.documentElement;
+    const htmlCls = String(htmlEl.className || '');
     return {
+      /*
+       * 用 classList.contains 而不是正则 —— 不只是更准，也是**必须**。
+       *
+       * 这段代码是被外层模板字符串拼出来的：反斜杠转义在到达浏览器之前就
+       * 已经被 JS 吃掉一层，正则里的空白类字符会静默退化成别的样子，判据全错。
+       * 2026-09-24 本人刚踩过：宿主类明明在 html 元素上，却报「主题层未注入」。
+       * 要在这类拼接代码里写正则，反斜杠必须写两遍；注释里也别用反引号，
+       * 它会当场终止模板字符串（同一天踩了两次）。
+       */
+      hostClassPresent: htmlEl.classList.contains(${JSON.stringify(HOST_CLASS)}),
+      htmlClassHead: htmlCls.slice(0, 120),
       wallpaperStylePresent: !!document.getElementById(${JSON.stringify(WALLPAPER_STYLE_ID)}),
       heroVarHead: varVal.slice(0, 120),
       heroVarIsFile: varVal.includes('file:///'),
@@ -273,4 +305,72 @@ export async function readWallpaperState(port) {
         .map(s => s.id || '(anonymous)'),
     };
   })()`, { awaitPromise: true });
+}
+
+/**
+ * 自检判据 —— **纯函数**，输入 readWallpaperState 的返回值，输出该报的问题与提示。
+ *
+ * 为什么抽出来：原来这段逻辑写在 set-wallpaper.mjs 的 applyState 里，夹在 CDP 调用
+ * 与 console.log 之间，于是它**没法单独验**。2026-09-24 验证异常路径时就卡在这：
+ * 想造「宿主类缺席」的故障，得先经 CDP 移除宿主类，可等下一个进程跑起来时，
+ * 宿主类已经被别的东西（多半是应用自己重新 apply 主题）加回来了 —— 窗口期抓不住，
+ * 报出来永远是"全过"，于是这条分支**从未被真正验过**。
+ * 判据一旦不可独立验证，就等于没有判据。
+ *
+ * 抽成纯函数后，验证方式是直接喂合成状态、逐路断言，不依赖任何时序：
+ *   · 宿主类缺席 → 必须报「主题层未注入」并给出补救指引，**且不许**报后面的果
+ *   · 宿主类在但 style 丢了 / 变量为空 / 对话区不透 → 各报各的
+ *   · 一切正常 → problems 为空
+ *
+ * @param {object} s  readWallpaperState() 的返回值
+ * @param {object} [o]
+ * @param {string} [o.imagePath]  本次要用的壁纸路径（有值时才有"壁纸变量是 file://"这条判据）
+ * @param {string} [o.preset]     本次档位（仅用于文案，不参与判断）
+ * @returns {{ problems: string[], notes: string[] }}
+ */
+export function checkWallpaperState(s, { imagePath = "" } = {}) {
+  const problems = [];
+  const notes = [];
+  if (!s) {
+    problems.push("拿不到页面状态（读回为空）");
+    return { problems, notes };
+  }
+
+  /*
+   * **先单独判「主题层在不在」，再判具体变量。这个顺序不能反。**
+   *
+   * 皮肤层的每一条规则都挂在 html.<HOST_CLASS> 下面；宿主类不在时，下面那几条
+   * 断言会**全部**命中，报出一串「壁纸变量不是 file:// 路径」「档位变量未生效」
+   * —— 全是果不是因。2026-09-24 就是这么把人引偏了一整轮：真因是 WorkBuddy
+   * 走开机自启、自启项绕过了启动器，主题层从未注入；而报错读起来像
+   * 「换壁纸这个功能坏了」。报错指向错方向，比不报错更费时间。
+   */
+  if (!s.hostClassPresent) {
+    problems.push(`主题层未注入 —— 页面上没有 html.${HOST_CLASS}`);
+    notes.push("皮肤层每条规则都挂在这个宿主类下面，宿主类不在 = 整层规则失去匹配对象。");
+    notes.push("这是根因，不是壁纸的问题 —— 写入那一步其实成功了。");
+    notes.push("");
+    notes.push("补主题层：跑一次 launcher\\注入皮肤.cmd");
+    notes.push("  或者：双击桌面 WorkBuddy 快捷方式（应用已在运行时，它会补注入）");
+    notes.push("");
+    notes.push("主题层为什么会丢：WorkBuddy 走的是开机自启（HKCU Run），");
+    notes.push("  而自启项默认直接拉 WorkBuddy.exe，绕过了启动器 —— 注入从未发生。");
+    notes.push("根治：node tools\\_repoint-startup.ps1（把自启项改指向启动器）");
+    return { problems, notes };
+  }
+
+  if (!s.wallpaperStylePresent) problems.push("皮肤层 style 元素不存在（注入没落地）");
+  /*
+   * heroVarIsFile 单独看是**假阳性**判据：宿主类缺席时，主题自带的 hero 是
+   * blob:file:///... 形态，里面同样含 file:///。只因上面已先行拦截宿主类缺席，
+   * 这个假阳性才被遮住。所以这一条必须留在 else 分支里 —— 挪上去就会开始误报。
+   */
+  if (imagePath && !s.heroVarIsFile) problems.push("壁纸变量不是 file:// 路径");
+  if (s.preset.glass === "(unset)") problems.push("档位变量未生效（--wb-skin-glass 为空）");
+  if (/\s\/\s*1\)$/.test(s.agentBodyBg)) problems.push("对话区仍完全不透明（玻璃层没压过去）");
+  const strays = (s.strayStyles || []).filter((x) => x !== WALLPAPER_STYLE_ID);
+  if (strays.length) problems.push(`发现重复注入层：${strays.join(", ")}`);
+  if (!problems.length) notes.push("排查：node tools/diag-occluders.mjs 30000 0.5");
+
+  return { problems, notes };
 }

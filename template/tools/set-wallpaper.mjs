@@ -32,7 +32,7 @@ import {
   listWallpapers, normalizePreset, readSkinState, writeSkinState, disableSkin,
   skinCssFromState,
 } from "./skin-state.mjs";
-import { applyWallpaperCss, removeWallpaperLayer, readWallpaperState, SKIN_PRESETS } from "./lib-cdp.mjs";
+import { applyWallpaperCss, removeWallpaperLayer, readWallpaperState, SKIN_PRESETS, checkWallpaperState } from "./lib-cdp.mjs";
 
 const PORT = Number(process.env.SKIN_PORT || 9342);
 const [, , cmd, ...rest] = process.argv;
@@ -105,21 +105,25 @@ async function applyState({ path: imagePath, preset, position }, { quiet = false
   console.log(`  玻璃层：glass=${s.preset.glass}  rootX=${s.preset.rootX}  blur=${s.preset.blur}`);
   console.log(`  对话区实测：bg=${s.agentBodyBg}  blur=${s.agentBodyBlur}`);
 
-  // 自检三条断言：任一不过就报异常 —— 不允许把"注入成功"当"观感正确"
-  const problems = [];
-  if (imagePath && !s.heroVarIsFile) problems.push("壁纸变量不是 file:// 路径");
-  if (s.preset.glass === "(unset)") problems.push("档位变量未生效（--wb-skin-glass 为空）");
-  if (/\s\/\s*1\)$/.test(s.agentBodyBg)) problems.push("对话区仍完全不透明（玻璃层没压过去）");
-  const strays = s.strayStyles.filter((x) => x !== "workbuddy-skin-wallpaper");
-  if (strays.length) problems.push(`发现重复注入层：${strays.join(", ")}`);
+  /*
+   * 自检断言：任一不过就报异常 —— 不允许把"注入成功"当"观感正确"。
+   *
+   * 判据本身在 lib-cdp.mjs 的 checkWallpaperState 里 —— 是个**纯函数**。
+   * 为什么抽出去：写在这里时它夹在 CDP 调用与打印之间，**没法单独验**。
+   * 2026-09-24 想验「宿主类缺席」这条分支时就卡住了：造故障要经 CDP 移除宿主类，
+   * 可等下一个进程跑起来，宿主类已被应用自己补回去了，窗口期抓不住，
+   * 报出来永远是"全过"，于是那条分支**从未被真正验过**。
+   * 判据不可独立验证 = 等于没有判据。抽成纯函数后直接喂合成状态逐路断言，不靠时序。
+   */
+  const { problems, notes } = checkWallpaperState(s, { imagePath });
 
   if (problems.length) {
     console.log("⚠️ 自检异常：");
     problems.forEach((p) => console.log("   · " + p));
-    console.log("   排查：node tools/diag-occluders.mjs 30000 0.5");
+    notes.forEach((n) => console.log(n ? "   " + n : ""));
     process.exit(4);
   }
-  console.log("  自检：3/3 通过");
+  console.log("  自检：断言全过 ✅");
   return s;
 }
 

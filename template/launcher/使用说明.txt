@@ -9,6 +9,9 @@
   它先启动 WorkBuddy，再自动注入「夜街」皮肤 + 你选的壁纸，
   约 2 秒完成、无窗口、不抢焦点、不留常驻进程。
 
+  开机也一样：开机自启项也已指向它 —— 开机走的就是这条启动器，
+  不会绕过注入。（查看：node tools\_repoint-startup.ps1 -Check  ／ 还原：加 -Rollback）
+
 
 【换壁纸 —— 三种方式，都很快】
 
@@ -319,7 +322,8 @@
   tools\build-wallpaper-picker.mjs
                               模板 → 纯 ASCII 的 .hta，含四道构建期校验
   tools\launcher.mjs          等 CDP → 注入主题 → 注入皮肤层 → 自检
-  tools\verify-launcher.mjs   回归自检（12 项断言，约 2 秒）
+  tools\verify-launcher.mjs   回归自检（13 项断言，约 2 秒）
+  tools\_repoint-startup.ps1   接管开机自启项，让开机也走启动器
   tools\diag-occluders.mjs    遮挡诊断：谁把壁纸挡住了
   tools\cdp-probe.mjs         只读诊断：CDP + 四层令牌实测值
   tools\shot.mjs              给当前界面截图（WorkBuddy 渲染层）
@@ -334,4 +338,4 @@
   docs\picker.png             壁纸选择器实拍（视觉验收留证）
   docs\picker-browse.png      翻进某个文件夹之后的视图（旧版截图）
   logs\launcher.log           运行日志
-  ..\backup\                  原始快捷方式备份（可回滚）
+  ..\backup\                  原始快捷方式备份 + 开机自启项原值（都可回滚）

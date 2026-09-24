@@ -13,7 +13,7 @@
 rem 1. 展开工程（把 <skill目录> 换成实际路径）
 node <skill目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 
-rem 2. 自检，12 项全绿才算装好
+rem 2. 自检，13 项全绿才算装好
 node D:\my\workbuddy-skin\tools\verify-launcher.mjs
 
 rem 3. 注入皮肤（WorkBuddy 需要在运行）
@@ -335,7 +335,7 @@ node <skill目录>\scripts\init.mjs --dest <已有工程> --upgrade
 node <工程>\tools\verify-launcher.mjs
 ```
 
-12 项自检，会直接告诉你哪一环坏了。
+13 项自检，会直接告诉你哪一环坏了。
 
 ---
 
