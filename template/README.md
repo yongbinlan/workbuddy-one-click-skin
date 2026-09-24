@@ -85,16 +85,18 @@ rem 3. 注入皮肤（WorkBuddy 需要在运行）
 ## 架构
 
 ```
-桌面 / 开始菜单 / 任务栏快捷方式（三者指向同一个启动器）
-   └─> wscript.exe + workbuddy-skin-launcher.vbs      （无窗口，零闪烁）
-          ├─ 步骤 1：确保应用已启动 —— sh.Run WorkBuddy.exe
-          │           ↑ 不依赖 node / launcher.mjs / CDP
-          └─ 步骤 2：node tools/launcher.mjs --no-launch   （纯增强层，干完即退）
-                       ├─ 等 CDP 端口就绪
-                       ├─ 等 renderer landmark 就绪
-                       ├─ codedrobe apply --no-launch       （注入主题）
-                       ├─ codedrobe verify                  （主题自检）
-                       └─ 应用皮肤层：壁纸 + 薄纱 + 玻璃     ← 必须在 apply 之后
+四处入口，最终都落到同一个 vbs 启动器：
+  ├─ 桌面 / 开始菜单 / 任务栏快捷方式（三处 .lnk 均指向它）
+  └─ 开机自启项（HKCU Run，init.mjs 装完会接管）  ← 不接管就绕过整条链
+        └─> wscript.exe + workbuddy-skin-launcher.vbs      （无窗口，零闪烁）
+               ├─ 步骤 1：确保应用已启动 —— sh.Run WorkBuddy.exe
+               │           ↑ 不依赖 node / launcher.mjs / CDP
+               └─ 步骤 2：node tools/launcher.mjs --no-launch   （纯增强层，干完即退）
+                            ├─ 等 CDP 端口就绪
+                            ├─ 等 renderer landmark 就绪
+                            ├─ codedrobe apply --no-launch       （注入主题）
+                            ├─ codedrobe verify                  （主题自检）
+                            └─ 应用皮肤层：壁纸 + 薄纱 + 玻璃     ← 必须在 apply 之后
 ```
 
 ### 皮肤层为什么必须排在主题之后
@@ -136,6 +138,29 @@ WorkBuddy 的 `supportsControlChannel` 与 CodeDrobe 的 `host.supported` **都�
 
 前提是应用自带 CDP 通道（用户级环境变量 `WORKBUDDY_REMOTE_DEBUGGING_PORT`）。
 启动器要做的只是「等就绪 + 注入」。
+
+### 为什么必须接管开机自启项
+
+上面那条链路有一个**没画在图里的前提**：开机启动必须经过桌面快捷方式。
+
+WorkBuddy 自带「开机自启」，它在
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 里写一条，
+值**直接指向 `WorkBuddy.exe`** —— 开机那条路径**根本不经过 vbs 启动器**，注入从未发生。
+
+它的症状很有欺骗性，因为**坏掉的是主题层，而报错的却是壁纸**：
+
+| 看起来正常的 | 实际发生的 |
+|---|---|
+| 工具报「已注入」 | 皮肤层 `<style>` **插进 `document.head` 就算成功**，工具不检查它是否生效 |
+| CDP 端口通、探针连得上 | 端口来自**用户级环境变量**，谁拉起应用都通，跟注入无关 |
+| 日志没有报错 | 皮肤层每条规则都挂在 `html.codedrobe-host-workbuddy` 下面，宿主类不在，**整层静默失去匹配对象** |
+
+所以判据只有一个：**看 `logs\launcher.log` 有没有当次记录**（或看页面上有没有那个宿主类）——
+不是看 CDP 通不通，也不是看工具说没说自己成功。
+
+`init.mjs` 装完之后会接管这条 Run 项：**值名不动，只改值**，原值留档成
+`backup\hkcu-run-*.original.json`，`tools\_repoint-startup.ps1 -Rollback` 可复原，
+`-Check` 可随时核对。不接管的话，用户重启一次皮肤就消失一次，而且**每次重启都消失**。
 
 ---
 
