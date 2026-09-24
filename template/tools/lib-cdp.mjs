@@ -118,6 +118,7 @@ export const PRESET_ALIAS = {
  *   .cr-input-container   6.5%
  *   .sidebar-next         右侧详情面板（会话切换时出现）
  *   .cr-widget-card       卡片式回复（出现时才有）
+ *   .teams-grid-scroll-content  「工作区 / 团队」网格视图（2026-09-24 补）
  */
 const GLASS_SELECTORS = [
   // 第一、二条镜像 build-theme.mjs ADAPTER 的选择器（同为 (0,4,1)），靠"注入在后"取胜；
@@ -128,6 +129,15 @@ const GLASS_SELECTORS = [
   ".cr-input-container",
   ".sidebar-next",
   ".cr-widget-card",
+  /* 「工作区 / 团队」网格视图的滚动容器：实测 1920×1020 = **97.1% 视口**，
+     底色 rgb(20,20,20) **完全不透明** —— 它一挡，壁纸在整个屏幕上一点都看不到。
+     它是**视图级**容器：不切到那个视图就测不出来，所以上面那份实测清单里一直没有它。
+     2026-09-24 由「提示已生效、但界面没变」这个反馈 + diag-occluders 抓出来
+     （当时第 1 名就是它，而玻璃层其实是生效的 —— 见下条注释）。
+     ⚠️ 这类"只在某个视图里出现"的全屏容器是**成批**存在的：换一个页面（技能 /
+     定时任务 / 资料库）就可能冒出一个新的。所以自检里加了一条遮挡检测（见
+     checkWallpaperState 的 occluders），别再让"注入成功但看不见"静默通过。 */
+  ".teams-grid-scroll-content",
 ];
 
 /** 内容块清单（只轻调，保持高不透明以保可读） */
@@ -300,6 +310,59 @@ export async function readWallpaperState(port) {
       },
       agentBodyBg: body ? getComputedStyle(body).backgroundColor : '(no .cr-agent__body)',
       agentBodyBlur: body ? (getComputedStyle(body).backdropFilter || '(none)') : '',
+      /*
+       * 遮挡采样 —— 找「覆盖大半个视口、且视觉上全不透明」的容器。
+       *
+       * 为什么要加这个：2026-09-24 用户报「提示已生效，但界面没变」。
+       * 注入确实成功了，皮肤层 style 在位、变量也对 —— 但页面上有一个
+       * 满屏 1920x1020（97.1% 视口）、rgb(20,20,20) **完全不透明**的容器
+       * 把壁纸整块盖死。皮肤层那时"全绿"，用户眼里"没变"。
+       *
+       * 「注入成功」和「看得见」是两件事。没有这条判据，前者会一直冒充后者。
+       *
+       * 阈值刻意收紧到「≥50% 视口 且 alpha ≥ 0.95」：
+       * 半透明的玻璃层（alpha 0.46~0.8）本来就该盖在上面，那不是故障；
+       * 内容块、iframe 之类面积小、也不是背景容器，同样不该误报。
+       */
+      occluders: (() => {
+        const vw = innerWidth, vh = innerHeight;
+        const alphaOf = (col) => {
+          if (!col || col === 'transparent') return 0;
+          let m = col.match(/^rgba?\\(([^)]+)\\)$/);
+          if (m) { const p = m[1].split(/[,\\/]/).map(s => s.trim());
+            return p[3] === undefined ? 1 : parseFloat(p[3]); }
+          m = col.match(/^color\\(srgb ([\\d.]+) ([\\d.]+) ([\\d.]+)(?: \\/ ([\\d.]+))?\\)$/);
+          if (m) return m[4] === undefined ? 1 : parseFloat(m[4]);
+          m = col.match(/^#([0-9a-f]{3,8})$/i);
+          if (m) return m[1].length >= 8 ? parseInt(m[1].slice(6, 8), 16) / 255 : 1;
+          return 1;
+        };
+        const desc = (el) => {
+          let s2 = el.tagName.toLowerCase();
+          if (el.id) s2 += '#' + el.id;
+          const cls = (el.className && typeof el.className === 'string')
+            ? el.className.trim().split(/\\s+/) : [];
+          if (cls.length) s2 += '.' + cls.slice(0, 2).join('.');
+          return s2;
+        };
+        const out = [];
+        for (const el of document.querySelectorAll('*')) {
+          if (el.id === 'root' || el.tagName === 'HTML' || el.tagName === 'BODY') continue;
+          if (el.closest && el.closest('[id^="workbuddy-skin-"]')) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width < 40 || r.height < 40) continue;
+          const ix = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+          const iy = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+          const pct = ix * iy / (vw * vh) * 100;
+          if (pct < 50) continue;
+          const cs = getComputedStyle(el);
+          if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+          if (alphaOf(cs.backgroundColor) < 0.95) continue;
+          out.push({ sel: desc(el), areaPct: Math.round(pct), bg: cs.backgroundColor });
+        }
+        out.sort((a2, b2) => b2.areaPct - a2.areaPct);
+        return out.slice(0, 5);
+      })(),
       strayStyles: [...document.querySelectorAll('style')]
         .filter(s => String(s.textContent || '').includes('wb-skin-glass'))
         .map(s => s.id || '(anonymous)'),
@@ -370,6 +433,36 @@ export function checkWallpaperState(s, { imagePath = "" } = {}) {
   if (/\s\/\s*1\)$/.test(s.agentBodyBg)) problems.push("对话区仍完全不透明（玻璃层没压过去）");
   const strays = (s.strayStyles || []).filter((x) => x !== WALLPAPER_STYLE_ID);
   if (strays.length) problems.push(`发现重复注入层：${strays.join(", ")}`);
+
+  /*
+   * 「注入成功」不等于「看得见」—— 这两件事必须分开判。
+   *
+   * 2026-09-24 用户的原话是「提示已生效，但实际上皮肤并没有变」。当时：
+   * 宿主类在、style 在、变量对、档位对 —— 上面每一条都过，工具报「自检全过」。
+   * 而页面上有一个满屏 97.1% 视口、rgb(20,20,20) 完全不透明的容器把壁纸盖死，
+   * 用户屏幕上一像素的壁纸都没透出来。
+   *
+   * 这类容器随 WorkBuddy 改版、以及**切换视图**成批出现（团队网格、技能列表、
+   * 定时任务……各有各的外壳），所以不能靠"把见过的类名加完"了事 ——
+   * 得让自检在下次漏掉时自己喊出来。
+   */
+  const blockers = s.occluders || [];
+  if (blockers.length) {
+    problems.push(
+      "有容器把壁纸挡住了：" +
+        blockers.map((b) => `${b.sel}（${b.areaPct}% 面积、完全不透明）`).join("、")
+    );
+    notes.push("");
+    notes.push("注入本身是成功的 —— 卡在「壁纸看不见」：");
+    notes.push("  皮肤层的玻璃化名单（GLASS_SELECTORS）没覆盖到上面这个容器。");
+    notes.push("");
+    notes.push("修法：把类名加进 lib-cdp.mjs 的 GLASS_SELECTORS（结构容器清单）。");
+    notes.push("  ⚠️ 这类容器是**成批**的 —— 换一个视图（技能 / 定时任务 / 资料库）");
+    notes.push("  就可能冒出一个新的。加完记得再跑一遍本自检确认没有新的。");
+    notes.push("");
+    notes.push("想看清全貌：node tools/diag-occluders.mjs 30000 0.5");
+  }
+
   if (!problems.length) notes.push("排查：node tools/diag-occluders.mjs 30000 0.5");
 
   return { problems, notes };

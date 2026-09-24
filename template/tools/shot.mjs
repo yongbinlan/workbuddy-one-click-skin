@@ -53,6 +53,25 @@ if (widthArg && widthArg !== realW) {
   });
 }
 
+/*
+ * 先让目标页面到前台，再截图。
+ *
+ * 为什么必须：Page.captureScreenshot 拿的是**合成器的当前帧**。目标窗口不在
+ * 前台时（被别的窗口遮住 / 最小化），Chromium 不会为新一帧做合成，于是可能
+ * 返回**过期画面** —— 而 DOM 查询（getComputedStyle / 探针）永远是实时的。
+ *
+ * 2026-09-24 实测踩中：探针说"覆盖屏幕中点且不透明的元素只有 #root（已被改成
+ * 纯红）"，可截图里那一点是深色。两张图对不上，排查被带偏了一整轮 ——
+ * 一度以为是 backdrop-filter 的问题。代价只有约 1 秒，但"到底看没看见"
+ * 这件事全靠这条通道，不能省。
+ */
+try {
+  await cdp(target.webSocketDebuggerUrl, "Page.bringToFront", {});
+  await new Promise((r) => setTimeout(r, 900));
+} catch (e) {
+  console.warn("⚠️ bringToFront 失败（继续截图，但拿到的可能是过期帧）：" + e.message);
+}
+
 const shot = await cdp(target.webSocketDebuggerUrl, "Page.captureScreenshot", {
   format: "png",
   captureBeyondViewport: false,

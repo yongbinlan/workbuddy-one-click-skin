@@ -583,19 +583,54 @@ if (want(13)) {
       { why: "多出一层重复注入", got: probe(st({ strayStyles: [WALLPAPER_STYLE_ID, "workbuddy-skin-wallpaper-old"] }), { imagePath: "a.jpg" }), must: ["重复注入层"], mustNot: ["主题层未注入"] },
       { why: "未选自选壁纸（不该拿 file:// 烦人）", got: probe(st({ heroVarIsFile: false }), { imagePath: "" }), must: [], mustNot: ["file://"] },
       { why: "读回为空", got: probe(null, {}), must: ["拿不到页面状态"], mustNot: ["主题层未注入"] },
+      {
+        /*
+         * 「注入成功」不等于「看得见」—— 这两件事必须分开判。
+         *
+         * 2026-09-24 用户的原话是「提示已生效，但实际上皮肤并没有变」：
+         * 宿主类在、style 在、变量对、档位对，上面每一条全过，工具报「自检全过」，
+         * 而屏幕上有一个 97% 视口、rgb(20,20,20) 完全不透明的容器把壁纸盖死。
+         * 用户一个像素的壁纸都没看到。
+         *
+         * 这条用例就是那次故障的回归保护：有遮挡时**不许**再报成功。
+         */
+        why: "有容器把壁纸整块盖死（要报遮挡，不能报「已生效」）",
+        got: probe(st({
+          occluders: [{ sel: "div.teams-grid-scroll-content", areaPct: 97, bg: "rgb(20, 20, 20)" }],
+        }), { imagePath: "a.jpg" }),
+        must: ["挡住了", "teams-grid-scroll-content", "97"],
+        // 遮挡是"看不看得见"的问题，不该顺手把主题层也报一遍
+        mustNot: ["主题层未注入"],
+      },
+      {
+        /* 兼容性：老版本读回里没有 occluders 字段，不能因此误报 */
+        why: "读回没有 occluders 字段（旧状态/兼容）→ 不许误报",
+        got: probe(st({ occluders: undefined }), { imagePath: "a.jpg" }),
+        must: [],
+        mustNot: ["挡住了"],
+      },
     ];
 
     const wrong = cases.filter((c) =>
       c.must.some((m) => !c.got.includes(m)) || c.mustNot.some((m) => c.got.includes(m)));
 
-    /* 附加：主题层缺席时，notes 必须给出**可执行**的下一步，而不只是说"坏了" */
+    /* 附加 1：主题层缺席时，notes 必须给出**可执行**的下一步，而不只是说"坏了" */
     const notes = checkWallpaperState(st({ hostClassPresent: false }), { imagePath: "a.jpg" }).notes.join("\n");
     const actionable = notes.includes("注入皮肤.cmd") && notes.includes("_repoint-startup.ps1");
     if (!actionable) wrong.push({ why: "主题层缺席时没给出可执行的补救", got: notes, must: [], mustNot: [] });
 
-    console.log(`13) 皮肤层自检判据：${cases.length + 1} 条用例 ｜ 失败 ${wrong.length} 条`);
+    /* 附加 2：报遮挡时必须指到改哪里（GLASS_SELECTORS），否则用户只知道坏了 */
+    const occlNotes = checkWallpaperState(
+      st({ occluders: [{ sel: "div.x", areaPct: 97, bg: "rgb(20, 20, 20)" }] }),
+      { imagePath: "a.jpg" }
+    ).notes.join("\n");
+    if (!occlNotes.includes("GLASS_SELECTORS")) {
+      wrong.push({ why: "报遮挡时没指到 GLASS_SELECTORS（用户不知道该改哪）", got: occlNotes, must: [], mustNot: [] });
+    }
+
+    console.log(`13) 皮肤层自检判据：${cases.length + 2} 条用例 ｜ 失败 ${wrong.length} 条`);
     wrong.length === 0
-      ? ok("判据在主题层缺席时报出真因、且不误报果；各条分支均按预期命中")
+      ? ok("判据在主题层缺席时报出真因、且不误报果；遮挡时能报出「看不见」；各条分支均按预期命中")
       : no("自检判据回归了：" + wrong.map((c) =>
           `${c.why}【实报：${c.got || "(无)"}】`).join(" / "));
   }
