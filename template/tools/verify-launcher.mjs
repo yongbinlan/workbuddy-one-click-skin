@@ -6,7 +6,7 @@
  *   1) .vbs / .ps1 纯 ASCII 且无 BOM —— wscript 与 PowerShell 5.1 按系统
  *                                      ANSI 码页解析无 BOM 的文件，非 ASCII 会炸
  *   2) launcher.mjs 语法            —— node --check
- *   3) 三处启动入口指向 wscript.exe —— 换入口类改动必须复核
+ *   3) 三处启动入口 = wscript.exe + 脚本参数（两样都要有）—— 换入口类改动必须复核
  *   4) 端到端（wscript → vbs → node） —— 退出码 0 + 日志出现注入/自检证据
  *   5) 未双开                       —— 调用前后 WorkBuddy 进程数必须一致
  *   6) 主题缺失降级                  —— 退出码须为 2，且应用启动不受影响
@@ -221,6 +221,32 @@ if (want(2)) {
 }
 
 // ---------- 3) 入口指向 ----------
+/*
+ * 判据必须**同时**查宿主和参数，而且参数在 .lnk 里是按 UTF-16LE 存的名字字符串。
+ *
+ * 2026-09-29 实测：原来只扫 ASCII 段里的 "wscript.exe" 是**假门禁** ——
+ * 一个 Target 只有宿主、**没把脚本当参数传**的快捷方式照样通过，
+ * 而双击它只会弹出「找不到脚本」，等于启动器整个不工作。
+ * 当时的触发场景：用第一版解析器读桌面 .lnk 时只扫了 ASCII 段，
+ * 于是把「参数其实在 UTF-16 段」误读成「没有参数」。那次错在解析器，
+ * 但它恰好暴露了这条判据的失效方式 —— 换一个**真缺参数**的 .lnk 进来，
+ * 它一样放行。判据查不到主体，就等于没有判据。
+ */
+const lnkWideRuns = (buf) => {
+  // UTF-16LE 的可打印串：低字节可打印、高字节为 0。两种对齐都扫
+  // （不要假设字符串一定落在偶偏移上 —— .lnk 各段长度不保证对齐）。
+  const out = [];
+  for (const start of [0, 1]) {
+    let run = "";
+    for (let i = start; i + 1 < buf.length; i += 2) {
+      if (buf[i] >= 32 && buf[i] < 127 && buf[i + 1] === 0) run += String.fromCharCode(buf[i]);
+      else { if (run.length >= 4) out.push(run); run = ""; }
+    }
+    if (run.length >= 4) out.push(run);
+  }
+  return out;
+};
+const ENTRY_VBS = "workbuddy-skin-launcher.vbs";
 if (want(3)) {
   const entries = [
     ["desktop", `${HOME}/Desktop/WorkBuddy.lnk`],
@@ -232,9 +258,11 @@ if (want(3)) {
     const b = fs.readFileSync(p);
     let ascii = "";
     for (const x of b) ascii += x >= 32 && x < 127 ? String.fromCharCode(x) : "\n";
-    ascii.includes("wscript.exe")
-      ? ok(`${tag} 入口指向 wscript.exe（${b.length}B）`)
-      : no(`${tag} 入口未指向 wscript.exe`);
+    const hostOk = ascii.includes("wscript.exe");
+    const argOk = lnkWideRuns(b).some((s) => s.includes(ENTRY_VBS));
+    if (hostOk && argOk) ok(`${tag} 入口 = wscript.exe + ${ENTRY_VBS}（${b.length}B）`);
+    else if (!hostOk) no(`${tag} 入口未指向 wscript.exe`);
+    else no(`${tag} 入口指向 wscript.exe，但**没把 ${ENTRY_VBS} 当参数传** —— 双击只会弹「找不到脚本」`);
   }
 }
 
