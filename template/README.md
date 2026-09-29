@@ -13,18 +13,25 @@
 rem 1. 展开工程（把 <skill目录> 换成实际路径）
 node <skill目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 
-rem 2. 自检，13 项全绿才算装好
+rem 2. 自检，14 项全绿才算装好
 node D:\my\workbuddy-skin\tools\verify-launcher.mjs
 
 rem 3. 注入皮肤（WorkBuddy 需要在运行）
 双击 D:\my\workbuddy-skin\launcher\注入皮肤.cmd
 ```
 
-**让皮肤每次开机自动回来**：把桌面 / 开始菜单的 WorkBuddy 快捷方式指向
-`launcher\workbuddy-skin-launcher.vbs`。原来的快捷方式会自动备份到 `backup\`，随时可还原。
+**让皮肤每次开机自动回来**：两件事都要做 ——
+
+1. 把桌面 / 开始菜单的 WorkBuddy 快捷方式指向
+   `launcher\workbuddy-skin-launcher.vbs`。原来的快捷方式会自动备份到 `backup\`，随时可还原。
+2. 在「启动」文件夹放一个补注入入口（`init.mjs` 默认就会装）：
+   `tools\_install-startup-entry.ps1` 生成 `WorkBuddySkinAutoInject.vbs`，
+   登录时补一次主题层注入。**只补注入、不启动 WorkBuddy** ——
+   要不要开机自启是用户的决定。
 
 > 初始化脚本会探测本机路径、生成壁纸选择器（含带图标的入口）、构建并打包主题、装一张默认壁纸。
 > 主程序装在非标准路径也能识别；识别不到就加 `--app "C:\...\WorkBuddy.exe"` 指定一次。
+> **它不会去改 WorkBuddy 自己的开机自启项** —— 那条由应用每次启动重写，改了也留不住（见「架构」一节）。
 
 ---
 
@@ -80,14 +87,20 @@ rem 3. 注入皮肤（WorkBuddy 需要在运行）
 └── logs\                      ← 运行日志
 ```
 
+> 第五个入口**不在工程目录里**：per-user「启动」文件夹下的
+> `WorkBuddySkinAutoInject.vbs`（由 `tools\_install-startup-entry.ps1` 生成）。
+> 放在那里是因为**应用不管这个位置** —— `HKCU\...\Run` 那条会被应用每次启动重写。
+
 ---
 
 ## 架构
 
 ```
-四处入口，最终都落到同一个 vbs 启动器：
+四个入口，分两类：
+
+```
+A) 「启动应用 + 注入」这一路（三处快捷方式都指向它）
   ├─ 桌面 / 开始菜单 / 任务栏快捷方式（三处 .lnk 均指向它）
-  └─ 开机自启项（HKCU Run，init.mjs 装完会接管）  ← 不接管就绕过整条链
         └─> wscript.exe + workbuddy-skin-launcher.vbs      （无窗口，零闪烁）
                ├─ 步骤 1：确保应用已启动 —— sh.Run WorkBuddy.exe
                │           ↑ 不依赖 node / launcher.mjs / CDP
@@ -97,7 +110,16 @@ rem 3. 注入皮肤（WorkBuddy 需要在运行）
                             ├─ codedrobe apply --no-launch       （注入主题）
                             ├─ codedrobe verify                  （主题自检）
                             └─ 应用皮肤层：壁纸 + 薄纱 + 玻璃     ← 必须在 apply 之后
+
+B) 「只补注入、不启动应用」这一路（登录时的兜底）
+  └─ 「启动」文件夹：WorkBuddySkinAutoInject.vbs（per-user Startup）
+        └─> node tools/launcher.mjs --no-launch             （同上，只是不拉起应用）
 ```
+
+**为什么 B 要单独一条，且刻意不启动应用**：注入只活在 renderer 内存里，重启必丢。
+用户可能根本不开机自启 —— 那时 A 整条都不跑，只有 B 能在登录后补上。
+但反过来，把一个"拉起 WorkBuddy"的入口塞进登录项，等于**替用户把他关掉的
+开机自启又打开**。要不要开机自启是用户的决定。
 
 ### 皮肤层为什么必须排在主题之后
 
@@ -139,13 +161,14 @@ WorkBuddy 的 `supportsControlChannel` 与 CodeDrobe 的 `host.supported` **都�
 前提是应用自带 CDP 通道（用户级环境变量 `WORKBUDDY_REMOTE_DEBUGGING_PORT`）。
 启动器要做的只是「等就绪 + 注入」。
 
-### 为什么必须接管开机自启项
+### 为什么不用 WorkBuddy 自己的开机自启项
 
-上面那条链路有一个**没画在图里的前提**：开机启动必须经过桌面快捷方式。
+上面 A 那条链路有一个**没画在图里的前提**：开机启动必须经过桌面快捷方式。
 
 WorkBuddy 自带「开机自启」，它在
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 里写一条，
-值**直接指向 `WorkBuddy.exe`** —— 开机那条路径**根本不经过 vbs 启动器**，注入从未发生。
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 里写一条
+`WorkBuddy.WorkBuddy`，值**直接指向 `WorkBuddy.exe`** ——
+开机那条路径**根本不经过 vbs 启动器**，注入从未发生。
 
 它的症状很有欺骗性，因为**坏掉的是主题层，而报错的却是壁纸**：
 
@@ -158,9 +181,49 @@ WorkBuddy 自带「开机自启」，它在
 所以判据只有一个：**看 `logs\launcher.log` 有没有当次记录**（或看页面上有没有那个宿主类）——
 不是看 CDP 通不通，也不是看工具说没说自己成功。
 
-`init.mjs` 装完之后会接管这条 Run 项：**值名不动，只改值**，原值留档成
-`backup\hkcu-run-*.original.json`，`tools\_repoint-startup.ps1 -Rollback` 可复原，
-`-Check` 可随时核对。不接管的话，用户重启一次皮肤就消失一次，而且**每次重启都消失**。
+#### 曾经试过「接管」它，失败了 —— 这段留着是为了别再来一次
+
+2026-09-24 的做法：把那条 Run 项的值**改指向我们的启动器 vbs**，并特意**值名不动**，
+理由是「让 WorkBuddy 以为自启还开着，别又多建一条造成双开」。
+原值留档成 `backup\hkcu-run-*.original.json`，`_repoint-startup.ps1 -Rollback` 可复原。
+
+**2026-09-29 同一故障原样复发。** 查应用自己的代码
+（`src/main/features/desktop-host/auto-launch-controller.ts`）才看清：
+
+```
+每次应用启动：
+  reconcileOnStartup() → getEnabled()
+      if (desired === false) → 关闭并返回
+      if (desired === true || settings.openAtLogin === true)   ← 我们保留值名 = 命中这里
+      ... 默认开启分支 ...
+      → enableCurrentBundleAutoLaunch() → app.setLoginItemSettings({ openAtLogin: true })
+```
+
+三条分支**殊途同归**，全落到同一次写入；Windows 上它把那条 Run 值写回**应用自己的 exe**。
+**每次启动都重写一遍。**
+
+而「保留值名」正是**重写条件之一**：`getLoginItemSettings()` 读到值在，
+`openAtLogin` 就是 `true`。当年那条理由正好说反了 ——
+保留值名不是「让应用别动它」，而是**每次开机都主动请它改回来**。
+
+> **教训**：接管一个**由对方程序维护**的配置项之前，先去读对方的代码，
+> 看它**读到这个值时做什么**。「读到 true」不等于「什么都不做」——
+> 很可能是「确保它是 true，并按自己的理解写一遍」。
+
+#### 所以现在放在应用管不着的地方
+
+| 位置 | 谁管 | 我们的做法 |
+|---|---|---|
+| `HKCU\...\Run` | **应用自己** | 只体检与还原，**不再改指向**（`tools\_repoint-startup.ps1`） |
+| per-user **「启动」文件夹** | **我们** | 装补注入入口（`tools\_install-startup-entry.ps1`） |
+
+`_repoint-startup.ps1` 现在的语义是「体检 + 把老版本留下的痕迹还原给应用」：
+**无备份不猜值**（报 `RESTORE-NO-BACKUP`）、**名字不匹配不还原**（报 `RESTORE-NAME-MISMATCH`）。
+
+另外，换壁纸时 `set-wallpaper.mjs` 读到页面上没有宿主类会**先自动补注入**
+（`tools\ensure-theme.mjs`），再把皮肤层重新放一遍 —— 补注入在后，
+同特异性靠"谁在后谁赢"。
+
 
 ### 为什么「注入成功」不等于「看得见」
 
@@ -406,7 +469,8 @@ node <skill目录>\scripts\init.mjs --dest <已有工程> --upgrade
 | 提示「主题包不存在」 | `build\` 下没有 `.codedrobe-theme` → 重跑 `init.mjs --upgrade` |
 | 皮肤注入了但界面没变 | `node tools\cdp-probe.mjs` 看 `targets` 数量（可能打到了另一个窗口） |
 | 换壁纸后看不见壁纸 | 档位调到「淡」，或跑 `node tools\diag-occluders.mjs` |
-| 重启后皮肤没了 | 快捷方式没指向启动器 → 按「快速开始」重新指向 |
+| 重启后皮肤没了 | ① 快捷方式没指向启动器 → 按「快速开始」重新指向；② 「启动」文件夹的补注入入口没装 → `powershell -File tools\_install-startup-entry.ps1` |
+| 换壁纸报「已注入，但自检说主题层未注入」 | 开机这一路绕过了启动器 → 先 `注入皮肤.cmd` 当场补上，再装开机入口（同一行） |
 | 壁纸选择器打开是空的 | 壁纸库还没图 → 用 `换壁纸.cmd` 拖一张进去 |
 | 找不到 WorkBuddy 主程序 | `init.mjs --app "C:\...\WorkBuddy.exe"` 指定一次 |
 
@@ -416,7 +480,7 @@ node <skill目录>\scripts\init.mjs --dest <已有工程> --upgrade
 node <工程>\tools\verify-launcher.mjs
 ```
 
-13 项自检，会直接告诉你哪一环坏了。
+14 项自检，会直接告诉你哪一环坏了。
 
 ---
 

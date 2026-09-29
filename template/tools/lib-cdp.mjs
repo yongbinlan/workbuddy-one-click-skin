@@ -438,12 +438,15 @@ export function checkWallpaperState(s, { imagePath = "" } = {}) {
     notes.push("皮肤层每条规则都挂在这个宿主类下面，宿主类不在 = 整层规则失去匹配对象。");
     notes.push("这是根因，不是壁纸的问题 —— 写入那一步其实成功了。");
     notes.push("");
-    notes.push("补主题层：跑一次 launcher\\注入皮肤.cmd");
+    notes.push("换壁纸时本工具**会先自动补注入**。能看到这条，说明自动补也没成功。");
+    notes.push("手动补：双击 launcher\\注入皮肤.cmd");
     notes.push("  或者：双击桌面 WorkBuddy 快捷方式（应用已在运行时，它会补注入）");
     notes.push("");
-    notes.push("主题层为什么会丢：WorkBuddy 走的是开机自启（HKCU Run），");
-    notes.push("  而自启项默认直接拉 WorkBuddy.exe，绕过了启动器 —— 注入从未发生。");
-    notes.push("根治：node tools\\_repoint-startup.ps1（把自启项改指向启动器）");
+    notes.push("主题层为什么会丢：WorkBuddy 每次启动都会把**它自己的**开机自启项");
+    notes.push("  （HKCU Run 的 WorkBuddy.WorkBuddy）重写回 WorkBuddy.exe，");
+    notes.push("  于是开机绕过启动器、注入从未发生。这个值抢不过应用 ——");
+    notes.push("  所以补注入改走「启动」文件夹里的独立入口。");
+    notes.push("查该入口：powershell -File tools\\_install-startup-entry.ps1 -Check");
     return { problems, notes };
   }
 
@@ -479,10 +482,18 @@ export function checkWallpaperState(s, { imagePath = "" } = {}) {
     );
     notes.push("");
     notes.push("注入本身是成功的 —— 卡在「壁纸看不见」：");
-    notes.push("  皮肤层的玻璃化名单（GLASS_SELECTORS）没覆盖到上面这个容器。");
+    notes.push("  皮肤层的容器名单没覆盖到上面这个。");
     notes.push("");
-    notes.push("修法：把类名加进 lib-cdp.mjs 的 GLASS_SELECTORS（结构容器清单）。");
-    notes.push("  ⚠️ 这类容器是**成批**的 —— 换一个视图（技能 / 定时任务 / 资料库）");
+    notes.push("⚠️ 先分清它属于哪一类，**两类处理方式正好相反**（看面积）：");
+    notes.push("  · 页面级外壳（占满整个视口）→ 加进 lib-cdp.mjs 的 CLEAR_SELECTORS：");
+    notes.push("      清成 background: transparent，且**不给** backdrop-filter。");
+    notes.push("  · 结构面（只占一块）→ 加进 GLASS_SELECTORS：半透明 + 毛玻璃。");
+    notes.push("");
+    notes.push("放错的后果比不改更糟：满屏的祖先容器一旦有毛玻璃，会把整个视口的");
+    notes.push("  壁纸糊掉，还会和子层的毛玻璃叠成**双重模糊**。2026-09-24 第一次");
+    notes.push("  就是按结构面处理的，用户的原话是「怎么越改越差」。");
+    notes.push("");
+    notes.push("这类容器是**成批**的 —— 换一个视图（技能 / 定时任务 / 资料库）");
     notes.push("  就可能冒出一个新的。加完记得再跑一遍本自检确认没有新的。");
     notes.push("");
     notes.push("想看清全貌：node tools/diag-occluders.mjs 30000 0.5");

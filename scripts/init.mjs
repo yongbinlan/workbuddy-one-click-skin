@@ -19,11 +19,11 @@
  *                                              刷成这个 skill 的新版（主题、壁纸、
  *                                              备份、env.cmd、文档都保留不动）
  *   node scripts/init.mjs --print              只看探测结果，不落盘
- *   node scripts/init.mjs --no-startup         跳过「开机自启项接管」
- *                                              （默认会做：若 WorkBuddy 已开着
- *                                               开机自启，就把它改指向启动器，
- *                                               否则重启后皮肤会静默消失。
- *                                               原值已备份，可 -Rollback 还原）
+ *   node scripts/init.mjs --no-startup         跳过「开机补注入入口」
+ *                                              （默认会做：在「启动」文件夹放一个
+ *                                               独立入口，登录时补注入一次 —— 否则
+ *                                               重启后皮肤会静默消失。
+ *                                               想移除：见收尾提示里的命令）
  *
  * 设计原则：
  *   · 幂等：重复跑只补齐缺失的东西，绝不覆盖用户已经改过的文件
@@ -31,8 +31,8 @@
  *   · 不静默：每一步都打印做了什么、跳过了什么、为什么
  *   · 不越权：绝不动用户的桌面，除非显式给 --shortcut。建在工程自己目录里的
  *     入口（launcher\壁纸选择器.lnk）不在此列 —— 那是本工程的产物，不是用户的。
- *     同理，开机自启项只会被「接管」：只在用户**已经打开**自启时才改它的指向，
- *     绝不替用户打开或关掉这个开关。
+ *     开机入口也守着同一条线：只**补注入**，**绝不替用户启动 WorkBuddy** ——
+ *     要不要开机自启是用户的决定，替他打开就是越权。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -364,48 +364,91 @@ if (libImages.length === 0 && THEME_DIR) {
   }
 }
 
-// ------------------------------------------------- 开机自启项（HKCU Run）接管
+// ------------------------------------------- 开机补注入入口（「启动」文件夹）
 /*
- * 为什么必须有这一步 —— 这是 2026-09-24 那次真实故障的根。
+ * 为什么必须有这一步 —— 这是 2026-09-24 与 2026-09-29 两次故障的根。
  *
  * WorkBuddy 自带「开机自启」，它在
  *     HKCU\Software\Microsoft\Windows\CurrentVersion\Run
- * 里写一条指向 WorkBuddy.exe 的记录（值名通常是 WorkBuddy.WorkBuddy）。
+ * 里写一条指向 WorkBuddy.exe 的记录（值名 WorkBuddy.WorkBuddy）。
  * **开机走的是这条路，完全不经过桌面快捷方式** —— 于是启动器没跑、
  * CodeDrobe 的主题层从未注入。而皮肤层的每一条规则都以
  * `html.codedrobe-host-workbuddy` 开头，宿主类不在 = 整层规则静默失去匹配对象。
  *
  * 表现极具误导性：调试端口来自环境变量，谁拉起应用都开着，所以 CDP 照样通；
  * 换壁纸照样报「已注入」—— 只有读回是空的。看起来像「换壁纸功能坏了」，
- * 实际是主题从头到尾就没注入过。本机查了好一阵才找到这里。
+ * 实际是主题从头到尾就没注入过。
  *
- * 所以一键初始化必须把这条路一起堵上；否则对开着自启的用户，
- * 「重启后自动恢复皮肤」这句承诺是假的 —— 而且坏得毫无提示。
+ * ---
+ * 第一次的修法是「把那条自启项改指向我们的启动器」。**这条修法已被证伪。**
+ * 应用每次启动都会跑 reconcileOnStartup() -> getEnabled()，最后无条件走到
+ *     app.setLoginItemSettings({ openAtLogin: true })
+ * 而它在 Windows 上就是把那个值写回应用自己的 exe。三条分支殊途同归，
+ * 全都落到这一次写入。实测时间线：09-24 改 → 09-27 应用启动即被改回
+ * → 09-28 已经复发（应用日志 openAtLogin:true 而启动器无记录）。
  *
- * 三条自我约束（都写实现在 tools\_repoint-startup.ps1 里）：
- *   · 只改**已存在**且指向 WorkBuddy.exe 的项，绝不新建
- *     （要不要开机自启是用户的决定，不是我们的）
- *   · 值名不动 —— WorkBuddy 自己的开关仍读作「已启用」，
- *     不会又开一条造成双开（两条会拉起两个实例）
- *   · 原值写进 backup\hkcu-run-<值名>.original.json，随时可还原：
- *         node tools\_repoint-startup.ps1 -Rollback
- * 所以它不越权：动的是用户**已经打开**的那个开关，只是把它接到正确的地方。
+ * 更糟的是当时的理由正好说反了：保留值名是为了「让应用以为还是启用」，
+ * 可正因为值名还在，getLoginItemSettings() 读到 openAtLogin=true，
+ * 恰好命中那条重写分支 —— 等于每次开机都主动请它改回来。
+ *
+ * ---
+ * 现在的做法：**换个应用管不着的地方**。
+ *   · 真正干活的入口放「启动」文件夹（tools\_install-startup-entry.ps1）。
+ *     登录时补注入一次，几秒后自行退出，不常驻。
+ *   · 那个入口**只补注入、不启动 WorkBuddy**。要不要开机自启是用户的决定，
+ *     替他打开就是越权。
+ *   · HKCU Run 那条**还给应用**：只在发现它还挂着我们的启动器路径时（老版本
+ *     留下的痕迹）把它还原成原值，绝不新建、也绝不删除。
  *
  * 想跳过：--no-startup
  */
 if (!has("--no-startup")) {
-  const ps1 = path.join(DEST, "tools", "_repoint-startup.ps1");
-  const vbs = path.join(DEST, "launcher", "workbuddy-skin-launcher.vbs");
-  if (!fs.existsSync(ps1)) {
-    console.log("【开机自启项】跳过：找不到 tools\\_repoint-startup.ps1");
-    console.log();
-  } else if (!fs.existsSync(vbs)) {
-    console.log("【开机自启项】跳过：找不到 launcher\\workbuddy-skin-launcher.vbs");
+  const entryPs1 = path.join(DEST, "tools", "_install-startup-entry.ps1");
+  const runPs1 = path.join(DEST, "tools", "_repoint-startup.ps1");
+
+  // ---- ① 装/复核「启动」文件夹里的补注入入口 ----
+  if (!fs.existsSync(entryPs1)) {
+    console.log("【开机补注入入口】跳过：找不到 tools\\_install-startup-entry.ps1");
     console.log();
   } else {
-    console.log("【开机自启项】查一下开机时会不会绕过启动器");
+    console.log("【开机补注入入口】在「启动」文件夹放一个补注入入口");
     const r = spawnSync("powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, "-Vbs", vbs],
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", entryPs1],
+      { encoding: "utf8", windowsHide: true });
+    const raw = (r.stdout || "") + (r.stderr || "");
+    /*
+     * 判据是**回读**，不是"Set-Content 没报错"。
+     * ps1 写完会把文件重新读一遍，把结果放进 READBACK / VERIFY-*。
+     * 不回读的写入等于没写 —— 本工程在这上面栽过不止一次。
+     */
+    const wrote = /^WROTE /m.test(raw);
+    const readback = /^READBACK True/m.test(raw);
+    const ours = /^VERIFY-OURS True/m.test(raw);
+    const points = /^VERIFY-LAUNCHER True/m.test(raw);
+
+    if (!wrote) {
+      console.log("  ⚠️ 没写入" + whyFailed(r) + "（这不等于「写失败」，也可能只是没跑起来）");
+      process.stdout.write((raw.trim() || "（子进程没有任何输出）").replace(/^/gm, "     ") + "\n");
+    } else if (readback && ours && points) {
+      console.log("  ✅ 已就位：登录时会补注入一次，只补注入、不启动应用");
+      console.log("     它只补注入，所以就算开机自启被关掉，它也不会擅自打开应用。");
+      console.log("     移除：powershell -File tools\\_install-startup-entry.ps1 -Remove");
+    } else {
+      console.log(`  ⚠️ 写入了但回读没全过：readback=${readback} 是我们的=${ours} 指向启动器=${points}`);
+      console.log("     请人工看一眼「启动」文件夹里的 WorkBuddySkinAutoInject.vbs");
+    }
+    if (r.status !== 0) console.log("  ⚠️ 退出码 " + r.status + whyFailed(r));
+    console.log();
+  }
+
+  // ---- ② 把 HKCU Run 那条还给应用（清掉老版本留下的接管痕迹）----
+  if (!fs.existsSync(runPs1)) {
+    console.log("【开机自启项】跳过：找不到 tools\\_repoint-startup.ps1");
+    console.log();
+  } else {
+    console.log("【开机自启项】确认它归应用自己管，并清掉我们留下的痕迹");
+    const r = spawnSync("powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", runPs1, "-Check"],
       { encoding: "utf8", windowsHide: true });
     const raw = (r.stdout || "") + (r.stderr || "");
 
@@ -413,38 +456,46 @@ if (!has("--no-startup")) {
      * ps1 只吐英文标记（它自己是纯 ASCII 的，理由见该文件头部），
      * 翻译在这一侧做 —— 而且抽成了纯函数，好在别处单独喂样本断言。
      */
-    const { kind, found, repointed, alreadyOurs } = parseStartupReport(raw);
+    const { kind, found, ours, normal } = parseStartupReport(raw);
 
     if (kind === "none") {
-      console.log("  · 没有开机自启项 —— 开机不会绕过启动器，无需处理");
-      console.log("    （以后要是打开了 WorkBuddy 的「开机自启」，重跑本脚本即可）");
+      console.log("  · 没有自启项 —— 应用不会开机自启，我们也什么都不用管");
+      console.log("    （这不影响皮肤：桌面快捷方式与上面的补注入入口都还在）");
     } else if (kind === "unparsed") {
       /*
-       * "没读懂" ≠ "没有"。这两件事混起来，正是本工程今天刚吃过的那类错
+       * "没读懂" ≠ "没有"。这两件事混起来，正是本工程吃过的那类错
        * ——结论与事实相反，而且看不出来。所以这里明确报"没读懂"并原样打印。
        */
       console.log("  ⚠️ 没读懂自启项状态" + whyFailed(r) + "（这不等于「没有自启项」）");
       process.stdout.write((raw.trim() || "（子进程没有任何输出）").replace(/^/gm, "     ") + "\n");
     } else {
       for (const e of found) console.log(`  · 发现：name=${e.name} value=${e.value}`);
-      for (const n of alreadyOurs) console.log(`  · 已经指向启动器：${n}（幂等，跳过）`);
+      for (const n of normal) console.log(`  · ${n} 指向 WorkBuddy.exe —— 归应用自己管，我们不碰 ✅`);
       /*
-       * 判据是**回读**，不是"Set-ItemProperty 没报错"。
-       * ps1 写完会重新从注册表读一遍，把结果放进 nowPointsAtOurVbs。
-       * 不回读的写入等于没写 —— 这个坑本工程踩过不止一次
-       * （最严重的一次是备份文件被写塌成一行，回滚时把注册表写坏了：
-       *   PowerShell 里逗号优先级高于加号，"name=" + $a, "value=" + $b 会塌成一项）。
+       * 还挂着我们的启动器路径 = 老版本接管留下的痕迹，且下一次应用启动
+       * 就会被它自己改回去。留着毫无意义，还让 -Check 永远报「是我们的」。
+       * 所以这里主动还原成原值（原值在 backup\ 里，ps1 会回读确认）。
        */
-      let allOk = true;
-      for (const e of repointed) {
-        if (!e.confirmed) allOk = false;
-        console.log(`  ${e.confirmed ? "✅" : "✗"} 已改指向启动器：${e.name}　回读确认=${e.confirmed}`);
+      if (ours.length) {
+        console.log(`  · 发现 ${ours.length} 项还挂着启动器路径（老版本留下的），正在还给应用…`);
+        const r2 = spawnSync("powershell.exe",
+          ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", runPs1],
+          { encoding: "utf8", windowsHide: true });
+        const raw2 = (r2.stdout || "") + (r2.stderr || "");
+        const p2 = parseStartupReport(raw2);
+        for (const e of p2.restored) {
+          console.log(`    ${e.confirmed ? "✅" : "✗"} 已还原：${e.name}　回读确认=${e.confirmed}`);
+        }
+        for (const n of p2.noBackup) {
+          console.log(`    ⚠️ ${n} 还挂着我们的路径，但 backup\\ 里没有它的原值记录 —— 没敢乱改，请人工看一眼`);
+        }
+        for (const n of p2.nameMismatch) {
+          console.log(`    ⚠️ ${n} 的备份文件属于另一个项 —— 没动它，请人工看一眼`);
+        }
+        if (!p2.restored.length && !p2.noBackup.length && !p2.nameMismatch.length) {
+          console.log("    （没有可还原项，原样保留）");
+        }
       }
-      if (repointed.length) {
-        console.log("    开机时会先拉起 WorkBuddy、再补注入皮肤（注入失败也不影响应用启动）。");
-        console.log("    还原成原样：node tools\\_repoint-startup.ps1 -Rollback");
-      }
-      if (!allOk) console.log("  ⚠️ 有一项回读没确认上 —— 就是上面那个 ✗，请人工看一眼注册表");
     }
     if (r.status !== 0) console.log("  ⚠️ 退出码 " + r.status + whyFailed(r));
     console.log();
@@ -492,12 +543,17 @@ console.log("  2. 换壁纸：双击 launcher\\壁纸选择器.hta（有缩略�
 console.log("        或双击 launcher\\换壁纸.cmd（命令行列表）");
 console.log("  3. 调壁纸透出强度：双击 launcher\\调强度.cmd");
 console.log("  4. 重启后自动恢复皮肤：");
-console.log("        ① 桌面/开始菜单的 WorkBuddy 快捷方式指向 launcher\\workbuddy-skin-launcher.vbs");
+console.log("        ① 桌面/开始菜单/任务栏的 WorkBuddy 快捷方式都指向 launcher\\workbuddy-skin-launcher.vbs");
 console.log("           （原来的快捷方式会自动备份到 backup\\，随时可还原）");
-console.log("        ② 开机自启项：上面【开机自启项】那一步若报「已改指向启动器」，就已经处理好了；");
-console.log("           若当时没有自启项、之后才打开的，重跑本脚本一次即可。");
+console.log("        ② 「启动」文件夹里有一个补注入入口（上面【开机补注入入口】那一步装的）：");
+console.log("           登录时补注入一次，只补注入、不启动应用。");
+console.log("           移除：powershell -File tools\\_install-startup-entry.ps1 -Remove");
+console.log();
+console.log("    为什么不用 WorkBuddy 自己的「开机自启」那条？");
+console.log("      它每次启动都会把那条注册表值重写回自己的 exe，抢不过 ——");
+console.log("      于是「启动」文件夹那个入口才是真正兜底的那条腿。");
 console.log();
 if (fs.existsSync(path.join(DEST, "README.md"))) {
   console.log("详细说明：README.md ｜ 简短版：launcher\\使用说明.txt");
 }
-console.log("排障：node \"" + path.join(DEST, "tools", "verify-launcher.mjs") + "\"   （13 项自检）");
+console.log("排障：node \"" + path.join(DEST, "tools", "verify-launcher.mjs") + "\"   （14 项自检）");

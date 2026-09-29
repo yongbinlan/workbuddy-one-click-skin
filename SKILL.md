@@ -58,7 +58,7 @@ node <本skill目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 它会依次做完这些事，每一步都打印做了什么：
 
 1. **探测本机环境** —— node、WorkBuddy 主程序、CodeDrobe CLI
-2. **展开工程** —— 把 `template/` 铺到目标目录（38 个文件，已剔除本机专属项）
+2. **展开工程** —— 把 `template/` 铺到目标目录（40 个文件，已剔除本机专属项）
 3. **生成 `launcher\env.cmd`** —— 本机路径落在这一份文件里
 4. **构建壁纸选择器** —— 生成 `launcher\壁纸选择器.hta`（纯 ASCII 产物）
 5. **构建主题包** —— `build\<主题id>-<版本>.codedrobe-theme`
@@ -66,10 +66,13 @@ node <本skill目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 7. **给壁纸选择器配一个带图标的入口** —— 在 `launcher\` 里生成 `壁纸选择器.lnk`
    （`.hta` 的文件图标由 Windows 的**扩展名关联**决定，与文件内容无关，详见 §7.10.1。
    这一步失败不致命：没有快捷方式时双击 `.hta` 一切照旧，只是图标是系统默认的）
-8. **接管开机自启项** —— 若 `HKCU\...\Run` 里有一条直接拉 `WorkBuddy.exe` 的记录，
-   把它改指向启动器 vbs（原值已备份，可 `-Rollback`）。**不做这一步，开着开机自启的
-   用户重启后皮肤必然静默消失** —— 开机走的是自启项，根本不经过快捷方式（§7.13）。
-   只在自启项**已存在**时才改，绝不替用户打开这个开关；`--no-startup` 可跳过。
+8. **装「启动」文件夹补注入入口** —— 在 per-user 启动文件夹放一个
+   `WorkBuddySkinAutoInject.vbs`，登录时补一次主题层注入（`launcher.mjs --no-launch`，
+   **只补注入、不启动应用** —— 用启动器 vbs 会拉起应用，等于替用户把他关掉的
+   开机自启又打开）。**不做这一步，用户重启后皮肤必然静默消失** ——
+   注入只活在 renderer 内存里，重启必丢（§7.13）。`--no-startup` 可跳过。
+   紧接着**把 `HKCU\...\Run` 那条还给应用自己管**：老版本曾「接管」过它，
+   现在跑 `_repoint-startup.ps1` 体检，发现是我们留下的就还原（为什么见 §7.13）。
 
 参数：
 
@@ -88,7 +91,7 @@ node <本skill目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 node <工程>\tools\verify-launcher.mjs
 ```
 
-**13 项自检**，全绿才算装好了。这一步别省 —— 它能在用户发现问题之前，
+**14 项自检**，全绿才算装好了。这一步别省 —— 它能在用户发现问题之前，
 把「产物过期」「编码不对」「脚本语法错」这些静默故障先揪出来。
 
 ---
@@ -108,19 +111,23 @@ node <工程>\tools\verify-launcher.mjs
 
 1. **桌面／开始菜单的 WorkBuddy 快捷方式**指向 `launcher\workbuddy-skin-launcher.vbs`。
    原来的快捷方式会**自动备份到 `backup\`**，随时可以还原。
-2. **开机自启项也要接管**。WorkBuddy 的「开机自启」会在
-   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写一条直接拉
-   `WorkBuddy.exe` 的记录，而**开机走的是那条路，根本不经过快捷方式**。
-   一条命令接管（`init.mjs` 默认就会做）：
+2. **在「启动」文件夹放一个补注入入口**。光有快捷方式不够：用户可能根本不开机自启，
+   而**注入只活在 renderer 内存里，重启必丢**。这个入口在登录时补一次注入。
+   `init.mjs` 默认就会装，命令是：
 
-   ```bat
-   node <工程>\tools\_repoint-startup.ps1            rem 接管：改指向启动器
-   node <工程>\tools\_repoint-startup.ps1 -Check     rem 只读，看有哪些、是否已接管
-   node <工程>\tools\_repoint-startup.ps1 -Rollback  rem 还原成原样
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File <工程>\tools\_install-startup-entry.ps1          rem 装 / 刷新
+   powershell -ExecutionPolicy Bypass -File <工程>\tools\_install-startup-entry.ps1 -Check   rem 只看，不写
+   powershell -ExecutionPolicy Bypass -File <工程>\tools\_install-startup-entry.ps1 -Remove  rem 移除
    ```
 
-   只改**已存在**的自启项，绝不新建；值名不动，所以 WorkBuddy 自己的开关仍读作
-   「已启用」，不会又开一条造成双开。踩坑细节见 §7.13。
+   它生成 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\WorkBuddySkinAutoInject.vbs`，
+   **只补注入、不启动 WorkBuddy** —— 要不要开机自启是用户的决定，替他打开就是越权。
+   别人的同名文件**先备份到 `backup\` 再让路**，绝不直接覆盖。
+
+   **⚠️ 不要再去改 WorkBuddy 自己的 `HKCU\...\Run` 自启项。** 2026-09-24 试过「接管」
+   它（值名不动、只改值指向我们的 vbs），**2026-09-29 同一故障原样复发** ——
+   应用每次启动都会把它改回自己的 exe。原理与证据见 §7.13。
 
 > 这是**替换启动入口**，不是守护进程。理由见 §7.6。
 
@@ -728,13 +735,12 @@ ICON 属性的排查经过（都不是猜的）：
 
 ---
 
-### 7.13 开机自启会绕过启动器（2026-09-24 实战，最阴的一次）
+### 7.13 开机这一路绕过了启动器（2026-09-24 首现，2026-09-29 复发后定案）
 
 **症状**：换壁纸报「已注入，但自检没通过」，写「壁纸变量不是 `file://` 路径」
 「档位变量未生效」—— 读起来像"换壁纸这个功能坏了"。
 
-**真因**：`HKCU\...\Run` 里有一条 `WorkBuddy.WorkBuddy = D:\...\WorkBuddy.exe`。
-开机走的是它，**不经过桌面快捷方式** → 启动器没跑 → CodeDrobe 主题层从未注入。
+**真因**：开机走的那条路**不经过启动器** → CodeDrobe 主题层从未注入。
 而皮肤层的**每一条**规则都以 `html.codedrobe-host-workbuddy` 开头，
 宿主类不在 = 整层规则静默失去匹配对象。
 
@@ -751,32 +757,96 @@ ICON 属性的排查经过（都不是猜的）：
 
 1. **先看页面有没有宿主类** —— 没有就是主题层的锅，跟壁纸无关；
 2. **看 `logs\launcher.log` 有没有当次记录** —— 不要把"CDP 通不通"当判据；
-3. 比对应用进程的启动命令行与开机时间 —— 裸 `WorkBuddy.exe` 就是自启绕过了启动器。
+3. 比对应用进程的启动命令行与开机时间 —— 裸 `WorkBuddy.exe` 就是绕过了启动器。
 
-**修法**：`tools\_repoint-startup.ps1` 把自启项的值改指向启动器 vbs
-（原值留档在 `backup\hkcu-run-<值名>.original.json`，`-Rollback` 可还原）。
-`init.mjs` 默认会跑这一步，`--no-startup` 可跳过。
+#### 第一次的修法是错的（2026-09-24 → 2026-09-29）
 
-**踩过的坑（都写进代码注释了）**：
+当时的做法：把 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 里
+`WorkBuddy.WorkBuddy` 那条**改指向我们的启动器 vbs**，并特意**保留值名不动**——
+理由是「让 WorkBuddy 以为自启还开着，别又多建一条造成双开」。
 
-- 改完自启项的值以后，它**不再包含 `WorkBuddy.exe`** —— 于是"只匹配含
-  `WorkBuddy.exe` 的值"的筛选会把刚写的项自己也漏掉，脚本报
-  `NONE（没有自启项）`，`init.mjs` 于是告诉用户「开机不会绕过启动器，无需处理」。
-  **结论与事实正好相反**，而且"已接管"与"从未有过"从此分不开。
-  筛选必须同时匹配两种情况。
+**2026-09-29 同一故障原样复发。** 查应用自己的代码
+（`src/main/features/desktop-host/auto-launch-controller.ts`）才明白这条路赢不了：
+
+```
+每次应用启动：
+  reconcileOnStartup() → getEnabled()
+      const settings = app.getLoginItemSettings()
+      const desired  = await readAutoLaunchDesired()
+      if (desired === false) → setCurrentBundleAutoLaunch(false); return false
+      if (desired === true || settings.openAtLogin === true)   ← 我们保留值名 = 命中这里
+      ... 默认开启分支 ...
+      → enableCurrentBundleAutoLaunch()
+         → setCurrentBundleAutoLaunch(true)
+            → app.setLoginItemSettings({ openAtLogin: true })
+```
+
+三条分支**殊途同归**，全落到同一次写入；而 Windows 上
+`setLoginItemSettings` 把那条 Run 值写回**应用自己的 exe**。**每次启动都重写一遍。**
+
+**当年那条设计理由正好说反了**：保留值名不是「让应用别动它」，
+而是让 `getLoginItemSettings()` 读到 `openAtLogin === true` ——
+**那正是重写条件之一**。等于每次开机都主动请它改回来。
+（本机时间线：09-24 11:27 改成我们的 vbs → 09-27 08:02 登录时 vbs 跑了、
+随后应用启动并在同一分钟把值改回去 → 09-28、09-29 连续两天又变成裸 exe。）
+
+> **通用教训**：接管一个**由对方程序维护**的配置项之前，
+> 先去读对方的代码，看它**读到这个值时做什么**。
+> 「读到 true」不等于「什么都不做」—— 很可能是「确保它是 true 并按自己的理解写一遍」。
+
+#### 现在的修法：换到应用管不着的地方
+
+| 位置 | 谁管 | 为什么 |
+|---|---|---|
+| `HKCU\...\Run` | **应用自己** | 它每次启动都会重写；我们只做体检与还原，不再改指向 |
+| per-user **「启动」文件夹** | **我们** | 应用不看这个位置；登录时必然执行 |
+
+1. **装入口**：`tools\_install-startup-entry.ps1` 在
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\WorkBuddySkinAutoInject.vbs`
+   放一个 `.vbs`，内容只有一行：跑 `node <工程>\tools\launcher.mjs --no-launch`。
+   **故意不用启动器 vbs** —— 那个会 `sh.Run WorkBuddy.exe`，等于替用户
+   把他关掉的开机自启又打开。**只补注入，不启动应用。**
+   `-Check` 只读、`-Remove` 只删**我们自己的**（按文件头标记识别）；
+   别人的同名文件**先备份到 `backup\startup-*.foreign-<时间戳>` 再让路**。
+   回读判据：`READBACK` / `VERIFY-OURS` / `VERIFY-LAUNCHER` / `VERIFY-NODE` 四项全 True。
+2. **把 Run 项还回去**：`tools\_repoint-startup.ps1` 现在的语义是
+   「体检 + 把老版本接管时留下的痕迹还原给应用」。**无备份不猜值**
+   （报 `RESTORE-NO-BACKUP`）、**名字不匹配不还原**（报 `RESTORE-NAME-MISMATCH`）。
+   `-Rollback` 仍接受，是默认模式的别名。
+3. **换壁纸时自愈**：`set-wallpaper.mjs` 读到 `hostClassPresent === false` 时，
+   先调 `tools\ensure-theme.mjs` 补注入主题层，**再把皮肤层重新放一遍**
+   （补注入在后 → 同特异性靠"谁在后谁赢"）。`ensure-theme.mjs` 走**进程内**调用
+   `@codedrobe/core`，不起子进程（本机沙箱下从 node 起子进程会被拦成 `EBUSY`）。
+
+#### 踩过的坑（都写进代码注释了）
+
+- 值名可以含点号（`WorkBuddy.WorkBuddy`）。`(Get-ItemProperty ...).$name`
+  会被解析成**属性链**、静默返回 `$null` → 回读假报失败。必须用
+  `Get-ItemPropertyValue -Path ... -Name $name`。
 - 备份文件**不能用 `@("name=" + $n, "value=" + $v)` 拼**：PowerShell 里
   **逗号优先级高于加号**，它会塌成一行 `name=xxx value=yyy`。回滚时把整行当值名写回去，
   HKCU Run 里就多出一条垃圾项，而且因为 `"" -eq ""` 还会报"还原成功"。
   改用 `ConvertTo-Json`，没有分隔符可错。
-- 值名可以含点号（`WorkBuddy.WorkBuddy`）。`(Get-ItemProperty ...).$name`
-  会被解析成**属性链**、静默返回 `$null` → 回读假报失败。必须用
-  `Get-ItemPropertyValue -Path ... -Name $name`。
+- 筛选自启项时**必须同时匹配 `WorkBuddy.exe` 与 `workbuddy-skin-launcher.vbs`**。
+  老版本只匹配前者，于是把我们自己刚写的项漏掉、报 `NONE（没有自启项）`，
+  `init.mjs` 于是告诉用户「开机不会绕过启动器，无需处理」—— **结论与事实正好相反**。
+
+#### 判据为什么必须能"强制走到"
+
+故障**不可复现**（它取决于机器上那条 Run 值现在是什么），所以注入分支必须能
+在正常环境里被强制走到。`ensure-theme.mjs` 的 `ensureTheme({ probeHostClass })`
+就是为此留的**可替换接缝**：门禁/测试传一个恒返回 `false` 的实现，
+即可强制走完整注入路径并断言 `alreadyThere === false`。
+**"判据不可独立验证"就等于没有判据。**
+
+另外，CodeDrobe 的 renderer 载荷自带 `MutationObserver` + `setInterval(ensure, 5000)`，
+人为摘掉宿主类撑不过几秒 —— 所以**只有"载荷从未注入过"才会真的坏**，
+这也解释了为什么故障表现为"一直没皮肤"，而不是"偶尔闪一下"。
 
 **通用教训**：自检报错必须指向**根因**，不能只报"果"。
-一个把排查引向错方向的报错，比不报错更费时间 —— 这次就是被引偏了一整轮。
+一个把排查引向错方向的报错，比不报错更费时间 —— 2026-09-24 那次被引偏了一整轮。
 所以 `lib-cdp.mjs` 的 `checkWallpaperState` 里，判断顺序是**先宿主类、后具体变量**，
-并且它是个**纯函数**，好让门禁（`verify-launcher.mjs` 第 13 项）能直接喂合成状态逐路断言 ——
-"判据不可独立验证"就等于没有判据。
+并且它是个**纯函数**，好让门禁（`verify-launcher.mjs` 第 13 项）直接喂合成状态逐路断言。
 
 ---
 
@@ -798,16 +868,17 @@ ICON 属性的排查经过（都不是猜的）：
 | 选图时只想拿一张，却怕把整个文件夹收进来 | 入口原来叫「浏览文件夹…」，语义指向「一批」（§4.2） | 主入口「用资源管理器选…」一次只出一张；代码一直是「点哪张才收哪张」，一张都不会多收 |
 | 点「在界面里翻…」好像没反应 | 起点记忆把**壁纸库目录自己**记成了"上次挑图的地方"（旧版自检写的，且自检不还原）→ 跳进去看到的图与壁纸库视图一模一样；且浏览态里再点它本来就是原地踏步（§4.4） | 升级到当前版本。壁纸库目录现在不记也不认；浏览态点它 = 回「换个位置」那一屏 |
 | 明明图在某目录，点「在界面里翻…」却每次都要从头翻 | `last-dir` 写端是 ANSI、读端却是 UTF-8 —— 路径含**中文**时读回乱码、`FolderExists` 判否，记忆静默失效（§4.4） | 升级。两端现在都是 ANSI，并有一条中文目录往返断言盯着 |
-| 重启后皮肤没了 | 快捷方式没指向启动器 | 按 §3 重新指向 `workbuddy-skin-launcher.vbs` |
-| **换壁纸报「已注入，但自检没通过」**，或自检说「壁纸变量不是 `file://` 路径」「档位变量未生效」 | **开机自启绕过了启动器** —— 主题层从未注入，皮肤层整层失去匹配对象（§7.13）。**注意：这三句话是指向错方向的旧报错** | 跑 `node <工程>\tools\_repoint-startup.ps1` 接管自启项；当前版本的自检会直接报「主题层未注入」并给出这一步 |
-| 自检说「主题层未注入 —— 页面上没有 `html.codedrobe-host-workbuddy`」 | 同上一行，这就是**真因** | 先 `launcher\注入皮肤.cmd` 补上；再按 §7.13 接管自启项，免得重启又丢 |
+| 重启后皮肤没了 | ① 快捷方式没指向启动器；② 「启动」文件夹的补注入入口没装（§7.13） | ① 按 §3 重新指向 `workbuddy-skin-launcher.vbs`；② `powershell -File tools\_install-startup-entry.ps1` 装开机入口 |
+| **换壁纸报「已注入，但自检没通过」**，或自检说「壁纸变量不是 `file://` 路径」「档位变量未生效」 | **开机这一路绕过了启动器** —— 主题层从未注入，皮肤层整层失去匹配对象（§7.13）。**注意：这三句话是指向错方向的旧报错** | 当前版本的自检会直接报「主题层未注入」。① 跑 `launcher\注入皮肤.cmd` 当场补上；② 查开机入口 `powershell -File tools\_install-startup-entry.ps1 -Check`，不在就装 |
+| 自检说「主题层未注入 —— 页面上没有 `html.codedrobe-host-workbuddy`」 | 同上一行，这就是**真因** | 同上。另外**新版 `set-wallpaper.mjs` 换壁纸时会自动补注入**，所以这一行多半出现在别的命令里 |
+| 装过老版本（它曾「接管」过 `HKCU\...\Run`），现在要回到正轨 | 老版本把那条例的值改成了我们的 vbs —— 而应用每次启动都会改回去（§7.13） | `node <工程>\tools\_repoint-startup.ps1` 体检并把它**还原给应用**（只读用 `-Check`）。无备份时它报 `RESTORE-NO-BACKUP` 而不是瞎猜一个值 |
 | 自检说「**有容器把壁纸挡住了**：`div.xxx`（97% 面积、完全不透明）」 | **注入成功，但用户看不见** —— 皮肤层没覆盖到这个新容器。2026-09-24 用户报「提示已生效，但皮肤没变」就是它 | ⚠️ **先看它是"整屏"还是"薄片"**：<br>· **整屏 = 页面级外壳** → 放 `tools\lib-cdp.mjs` 的 `CLEAR_SELECTORS`，`background: transparent` 且**不给** `backdrop-filter`<br>· **只占一块 = 结构面** → 才放 `GLASS_SELECTORS`（半透明 + 毛玻璃）<br>**放错比不改更糟**：满屏祖先容器一旦有毛玻璃，会把整个视口糊掉，还和子层叠成双重模糊（用户原话「越改越差」）。加完重跑自检 —— 这类容器**成批**存在 |
 | 探针读回的变量全对，但**截图看着没换肤** | 截图拿的是**过期的合成帧** —— 目标窗口不在前台时 Chromium 不为新帧做合成，而 DOM 查询永远是实时的 | `tools\shot.mjs` 现在截图前会先 `Page.bringToFront` 并等约 1 秒；自己写截图脚本时别漏这一步 |
 | 提示「已生效」但**感觉没变化**，且自检确实全过 | 多半是**档位太实**，不是故障：浓档 = 遮罩 90%/78% + 玻璃 80%，壁纸本就"隐约可见" | 切「中」或「淡」档对比一下；要壁纸明显就把默认档位调低 |
 | 壁纸选择器打开是空的 | 壁纸库还没图 | 用 `换壁纸.cmd` 拖一张图进去，或重跑 `init.mjs` |
 | 找不到 WorkBuddy 主程序 | 装在非标准路径（§6） | `init.mjs --app "C:\...\WorkBuddy.exe"` |
 
-**通用第一步**：`node <工程>\tools\verify-launcher.mjs`（13 项自检，会直接告诉你哪一环坏了）。
+**通用第一步**：`node <工程>\tools\verify-launcher.mjs`（14 项自检，会直接告诉你哪一环坏了）。
 排障时用 `--only=1,7` 只跑指定项、`--list` 看编号 —— 第 6/9/10/11 项会动真实环境
 （临时改主题包名、重建选择器、拉起界面、真跑一遍 `.cmd`），能避开就避开。
 
@@ -828,6 +899,9 @@ ICON 属性的排查经过（都不是猜的）：
 │   ├── init 相关：write-env.mjs
 │   ├── 主题相关：build-theme.mjs
 │   ├── 壁纸相关：set-wallpaper.mjs / skin-state.mjs / lib-cdp.mjs
+│   ├── 主题补注入：ensure-theme.mjs            （进程内调 @codedrobe/core，不起子进程）
+│   ├── 开机入口：_install-startup-entry.ps1   （装「启动」文件夹里的补注入 .vbs）
+│   ├── 自启项体检：_repoint-startup.ps1       （**不再接管**；体检 + 还回去，见 §7.13）
 │   ├── 界面相关：picker.template.hta / picker.ico / build-wallpaper-picker.mjs
 │   └── 自检相关：verify-launcher.mjs / check-shortcuts.mjs / cdp-probe.mjs / diag-occluders.mjs
 ├── themes\<主题>\            ← 主题源

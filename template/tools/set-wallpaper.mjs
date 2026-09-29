@@ -13,6 +13,12 @@
  *   ③ 玻璃层  把挡住壁纸的结构容器改成半透明 + 毛玻璃
  * 三层共用一个"档位"，所以换壁纸和调观感都是一条命令。
  *
+ * 自愈：写入后若读回发现**主题层不在**（宿主类缺席 → 皮肤层整层失去匹配对象），
+ * 会先自动补注入主题层、再把皮肤层放一遍，而不是丢一句报错给用户。
+ * 补注入走 tools/ensure-theme.mjs（进程内直调 CodeDrobe 库，不起子进程）。
+ * 为什么需要它：WorkBuddy 每次启动都会抢回自己的开机自启项，开机常常绕过启动器，
+ * 主题层因此从未注入 —— 详见 tools/ensure-theme.mjs 头部的证据链。
+ *
  * 用法：
  *   node tools/set-wallpaper.mjs                              列出壁纸库 + 当前档位
  *   node tools/set-wallpaper.mjs use <编号|文件路径> [档位]     换壁纸
@@ -33,6 +39,7 @@ import {
   skinCssFromState,
 } from "./skin-state.mjs";
 import { applyWallpaperCss, removeWallpaperLayer, readWallpaperState, SKIN_PRESETS, checkWallpaperState } from "./lib-cdp.mjs";
+import { ensureTheme } from "./ensure-theme.mjs";
 
 const PORT = Number(process.env.SKIN_PORT || 9342);
 const [, , cmd, ...rest] = process.argv;
@@ -67,6 +74,40 @@ async function tryInject(cssText) {
 }
 
 /**
+ * 主题层不在 → 先补注入，再把皮肤层放一遍。
+ *
+ * 为什么要在这儿自愈（2026-09-29 加）：
+ *   WorkBuddy 每次启动都会把它**自己的**开机自启项重写回 WorkBuddy.exe
+ *   （见 tools/ensure-theme.mjs 头部的证据链），于是开机常常绕过启动器，
+ *   CodeDrobe 的主题层从未注入。而皮肤层的每条规则都挂着
+ *   `html.codedrobe-host-workbuddy`，宿主类不在 = 整层规则静默失效。
+ *
+ *   用户看到的是「换壁纸报错」，实际写入那一步一直是对的。
+ *   与其把这件事解释给用户听，不如直接替他补上 —— **用户不该需要理解
+ *   「主题层」这个概念**。
+ *
+ * 顺序要点：补注入发生在皮肤层**之后**，而两者的选择器同特异性、靠
+ * 「谁在后谁赢」，所以补完必须把皮肤层再放一次，否则主题会把壁纸压回去。
+ */
+async function healThemeLayer(css, state) {
+  console.log("检测到主题层缺席（皮肤层整层失去匹配对象），正在补注入…");
+  let r;
+  try {
+    r = await ensureTheme({ port: PORT });
+  } catch (e) {
+    console.log("⚠️ 补注入出错：" + (e?.message || e));
+    return state;
+  }
+  if (!r.ok) {
+    console.log("⚠️ 补注入未成功：" + (r.why || "原因未知"));
+    return state;
+  }
+  console.log(`主题层已补注入 ✅（themeId=${r.themeId}）`);
+  const again = await tryInject(css);
+  return again.state || state;
+}
+
+/**
  * 统一出口：换图与调档位都走这里重算整条皮肤层。
  * 保证"文件记录"和"页面实际"永远一致，不会只改一半。
  */
@@ -91,7 +132,7 @@ async function applyState({ path: imagePath, preset, position }, { quiet = false
    * 写入那一步早已成功，只是拿不到数值做校验。这时必须如实报「已注入、未校验」，
    * 绝不能再报「不可达 / 下次生效」—— 那句话会把人骗去重启一个本来已经生效的界面。
    */
-  const s = r.state;
+  let s = r.state;
   if (!s) {
     console.log("已注入 ✅（读回校验超时，本次切换已生效）");
     console.log("   写入成功，界面应该已经变了；只是没能读回数值做断言。");
@@ -99,6 +140,8 @@ async function applyState({ path: imagePath, preset, position }, { quiet = false
     console.log("   想复核：把 WorkBuddy 切到前台，再跑 node tools/launcher.mjs --status");
     return null;
   }
+
+  if (s.hostClassPresent === false) s = await healThemeLayer(css, s);
 
   console.log("已注入并生效 ✅");
   console.log("  生效变量：" + s.heroVarHead.slice(0, 80));

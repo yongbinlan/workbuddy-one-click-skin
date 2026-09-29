@@ -12,8 +12,12 @@
  *      结论对不上事实，比不报还糟。
  *   3. 抽成纯函数才能被单独喂样本断言。原来这段逻辑埋在一堆 console.log
  *      中间，而它外面还裹着「spawn powershell」—— 在受限环境里子进程起不来，
- *      于是这条分支**从来跑不到**，也就从来没被验过。同一课今天已经上过一次：
- *      自检判据因为没法独立验证，有一条分支写了很久没人发现是死的。
+ *      于是这条分支**从来跑不到**，也就从来没被验过。
+ *
+ * 2026-09-29 语义改了：那个 .ps1 不再「接管」自启项（已被证伪：应用每次启动
+ * 都会用 setLoginItemSettings 把值重写回自己的 exe），改为「体检 + 把我们
+ * 留下的痕迹还回去」。所以这里的输出也从 repointed 变成 restored，
+ * 并新增 normal（指向 WorkBuddy.exe，本来就该归应用own）与两类失败标记。
  */
 
 /**
@@ -21,8 +25,11 @@
  * @returns {{
  *   kind: "none" | "found" | "unparsed",
  *   found: { name: string, value: string, alreadyOurs: boolean }[],
- *   repointed: { name: string, confirmed: boolean }[],
- *   alreadyOurs: string[],
+ *   ours: string[],
+ *   normal: string[],
+ *   restored: { name: string, confirmed: boolean }[],
+ *   noBackup: string[],
+ *   nameMismatch: string[],
  *   changed: number | null
  * }}
  */
@@ -40,13 +47,21 @@ export function parseStartupReport(raw) {
     });
   }
 
-  const repointed = [];
-  for (const m of text.matchAll(/^REPOINTED name=(\S+) nowPointsAtOurVbs=(\w+)/gm)) {
-    repointed.push({ name: m[1], confirmed: m[2].toLowerCase() === "true" });
+  const ours = found.filter((f) => f.alreadyOurs).map((f) => f.name);
+
+  const normal = [];
+  for (const m of text.matchAll(/^NORMAL (\S+)/gm)) normal.push(m[1]);
+
+  const restored = [];
+  for (const m of text.matchAll(/^RESTORED name=(\S+) matches=(\w+)/gm)) {
+    restored.push({ name: m[1], confirmed: m[2].toLowerCase() === "true" });
   }
 
-  const alreadyOurs = [];
-  for (const m of text.matchAll(/^ALREADY-OURS name=(\S+)/gm)) alreadyOurs.push(m[1]);
+  const noBackup = [];
+  for (const m of text.matchAll(/^RESTORE-NO-BACKUP name=(\S+)/gm)) noBackup.push(m[1]);
+
+  const nameMismatch = [];
+  for (const m of text.matchAll(/^RESTORE-NAME-MISMATCH name=(\S+)/gm)) nameMismatch.push(m[1]);
 
   const cm = text.match(/^CHANGED (\d+)/m);
 
@@ -64,5 +79,5 @@ export function parseStartupReport(raw) {
   if (/^NONE/m.test(text)) kind = "none";
   else if (found.length) kind = "found";
 
-  return { kind, found, repointed, alreadyOurs, changed: cm ? Number(cm[1]) : null };
+  return { kind, found, ours, normal, restored, noBackup, nameMismatch, changed: cm ? Number(cm[1]) : null };
 }

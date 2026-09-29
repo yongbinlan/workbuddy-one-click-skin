@@ -1,7 +1,6 @@
 param(
-  [switch]$Rollback,
   [switch]$Check,
-  [string]$Vbs = ""
+  [switch]$Rollback
 )
 $ErrorActionPreference = "Stop"
 # NOTE: param() MUST be the first statement in this file. Anything executable
@@ -13,40 +12,80 @@ $ErrorActionPreference = "Stop"
 # ANSI/GBK on this machine, so non-ASCII literals here would corrupt paths.
 #
 # ===========================================================================
-# WHY THIS FILE EXISTS  (2026-09-24, real incident on the dev machine)
+# WHAT THIS FILE DOES NOW  (rewritten 2026-09-29)
 #
-# The skin launcher is normally reached through the desktop / start-menu
-# shortcut. But WorkBuddy ALSO registers an autostart entry under
-#     HKCU\Software\Microsoft\Windows\CurrentVersion\Run
-# named "WorkBuddy.WorkBuddy", pointing straight at WorkBuddy.exe.
+# HISTORY, because the wrong version of this file cost two incidents.
 #
-# At boot Windows runs THAT entry, not the shortcut. So the launcher vbs never
-# runs, and neither does the CodeDrobe theme injection it performs. The page
-# then has no theme layer at all -- and every skin-layer rule is prefixed with
-# "html.codedrobe-host-workbuddy", so the entire layer silently stops matching.
+# 2026-09-24: the skin's "restores after reboot" promise was false. WorkBuddy
+# registers its own autostart entry under
+#     HKCU\Software\Microsoft\Windows\CurrentVersion\Run\WorkBuddy.WorkBuddy
+# pointing at WorkBuddy.exe. At boot Windows runs THAT, not the desktop
+# shortcut -- so the launcher vbs never ran and the CodeDrobe theme layer was
+# never injected. Every skin-layer rule is prefixed with
+# "html.codedrobe-host-workbuddy", so the whole layer silently stops matching.
+# The first fix was: repoint that value at our launcher vbs, keeping the value
+# NAME untouched so WorkBuddy's own toggle would still read as enabled.
 #
-# The symptom is badly misleading: CDP still answers (the debugging port comes
-# from an environment variable, so it is open no matter who started the app),
-# and the wallpaper write still reports success -- only the read-back is empty.
-# It looks like "changing the wallpaper is broken", when in fact no theme was
-# ever injected.
+# 2026-09-29: the same symptom came back. It turns out the first fix cannot
+# work, and here is the proof from the app's own code
+# (src/main/features/desktop-host/auto-launch-controller.ts):
 #
-# FIX: repoint the autostart VALUE at the launcher vbs.
-# The value NAME is deliberately left untouched:
-#   * WorkBuddy's own "launch at login" toggle keeps reading as enabled, so it
-#     will not get switched back on and create a SECOND entry -- two entries
-#     would start two instances;
-#   * worst case, WorkBuddy rewrites the value and we are back to "no skin" --
-#     never to "two instances".
+#     reconcileOnStartup() -> getEnabled():
+#         const settings = app.getLoginItemSettings();
+#         const desired  = await readAutoLaunchDesired();
+#         if (desired === false) { setCurrentBundleAutoLaunch(false); return false; }
+#         if (desired === true || settings.openAtLogin === true)
+#             return enableCurrentBundleAutoLaunch(desired !== true);
+#         ... default-on ...
+#         return enableCurrentBundleAutoLaunch(true);
 #
-# Only EXISTING entries are repointed. This script never creates one: whether
-# to start at login is the user's decision, not ours.
+#     enableCurrentBundleAutoLaunch() -> setCurrentBundleAutoLaunch(true)
+#         -> app.setLoginItemSettings({ openAtLogin: true })
+#
+# setLoginItemSettings() on Windows writes that Run value back to the app's own
+# exe. EVERY branch ends in that same write, and it runs on every app start.
+# So the value is ours only until the next time WorkBuddy launches.
+#
+# The old design note was exactly backwards: keeping the value name is what
+# GUARANTEES the rewrite. getLoginItemSettings() finds the value present, so
+# openAtLogin reads true, which is one of the two conditions on the rewrite
+# line.
+#
+# Timeline measured on this machine:
+#   09-24 11:27  we repointed the value at our vbs
+#   09-27 08:02  the vbs ran at boot, then the app started and rewrote the value
+#   09-28 10:29  app log [AutoLaunch] read state {desired:true, openAtLogin:true},
+#                no launcher log entry -> already bypassing the launcher again
+#   09-29 09:24  same, user reports "the skin is gone again"
+#
+# So: we stop competing for that value. It belongs to the app; let it own it.
+# The durable place for our entry is the per-user Startup folder, installed by
+# tools\_install-startup-entry.ps1 -- a location the app does not manage.
+#
+# WHAT THIS SCRIPT IS FOR NOW
+#   - default / -Check : report the Run entries and say whether any of them is
+#                        still pointed at our launcher (a leftover from the old
+#                        design, on machines that ran it).
+#   - default (no flag): ALSO hand any such entry back -- restore the original
+#                        value we saved in backup\hkcu-run-<name>.original.json.
+#   - -Rollback        : accepted as an alias of the default, because that is
+#                        what the flag used to mean and older docs still say so.
+#
+# THREE SELF-IMPOSED RULES (unchanged):
+#   - we never CREATE a Run entry -- whether to start at login is the user's call
+#   - we never DELETE one either (that would silently switch the user's
+#     autostart off) -- the value name always stays, only its value is restored
+#   - the original value is kept in backup\ as JSON, so this is reversible
+#
+# The file name is kept deliberately. "Repoint" is still accurate -- it now
+# repoints the value back to the app instead of away from it -- and renaming it
+# would ripple through the publish chain, the initializer and three documents
+# for no functional gain.
 # ===========================================================================
 
 $root   = Split-Path -Parent $PSScriptRoot
 $backup = Join-Path $root "backup"
 if (-not (Test-Path -LiteralPath $backup)) { New-Item -ItemType Directory -Path $backup | Out-Null }
-if (-not $Vbs) { $Vbs = Join-Path $root "launcher\workbuddy-skin-launcher.vbs" }
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -57,20 +96,15 @@ function Get-RunEntries {
   foreach ($p in $props.PSObject.Properties) {
     if ($p.Name -like "PS*") { continue }
     $v = [string]$p.Value
-    # Match BOTH "still points at WorkBuddy.exe" (not taken over yet) AND
-    # "already points at our launcher vbs" (taken over on an earlier run).
+    # Match BOTH "points at WorkBuddy.exe" (the normal state, the app owns it)
+    # AND "still points at our launcher vbs" (a leftover from the old design).
     #
-    # Why both, and why this is not optional: once we repoint the value it no
-    # longer contains "WorkBuddy.exe" anywhere -- it becomes
-    #     "<wscript>" "<...>\workbuddy-skin-launcher.vbs"
-    # So a filter that only looks for "WorkBuddy.exe" stops seeing the entry
-    # it just wrote. Observed 2026-09-24 on the dev machine: the registry held
-    # the repointed value while this script reported
+    # Why both, and why this is not optional: an earlier version matched only
+    # "WorkBuddy.exe", so once the value was ours this script stopped seeing the
+    # entry it had just written and reported
     #     NONE (no HKCU Run value points at WorkBuddy.exe)
     # which reads as "this machine does not autostart WorkBuddy" -- the exact
-    # opposite of the truth. It also made -Check useless for telling
-    # "never had one" apart from "already taken over", and left the
-    # ALREADY-OURS branch below as dead code that could never run.
+    # opposite of the truth. Observed 2026-09-24.
     if ($v -match "WorkBuddy\.exe" -or $v -match "workbuddy-skin-launcher\.vbs") {
       $out += [pscustomobject]@{ Name = $p.Name; Value = $v }
     }
@@ -78,37 +112,7 @@ function Get-RunEntries {
   return ,$out
 }
 
-function New-LauncherValue {
-  $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
-  return ('"' + $wscript + '" "' + $Vbs + '"')
-}
-
-# ------------------------------------------------------------------ rollback
-if ($Rollback) {
-  Write-Output "--- startup autostart: rollback ---"
-  $files = @(Get-ChildItem -LiteralPath $backup -Filter "hkcu-run-*.original.json" -ErrorAction SilentlyContinue)
-  if ($files.Count -eq 0) { Write-Output "NO-BACKUP (nothing recorded, nothing to restore)"; Write-Output "DONE"; exit 0 }
-  foreach ($f in $files) {
-    # JSON record -- see the long note at the backup site for why the original
-    # hand-rolled "name=... / value=..." text format was abandoned.
-    $rec   = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
-    $name  = [string]$rec.name
-    $value = [string]$rec.value
-    if (-not $name) { continue }
-    Set-ItemProperty -Path $runKey -Name $name -Value $value
-    # NOTE: value names may contain dots ("WorkBuddy.WorkBuddy"). Writing
-    # $obj.$name would be parsed as a property CHAIN and silently yield $null,
-    # which turns this read-back into a false negative (it reported
-    # nowPointsAtOurVbs=False while the raw registry already held the new
-    # value). Always read back through the indexer / Get-ItemPropertyValue.
-    $back = [string](Get-ItemPropertyValue -Path $runKey -Name $name)
-    Write-Output ("RESTORED name=" + $name + " matches=" + ($back -eq $value))
-  }
-  Write-Output "DONE"
-  exit 0
-}
-
-# --------------------------------------------------------------------- check
+# ------------------------------------------------------------------ report
 Write-Output "--- startup autostart: HKCU Run entries that launch WorkBuddy ---"
 $entries = Get-RunEntries
 if ($entries.Count -eq 0) {
@@ -116,42 +120,43 @@ if ($entries.Count -eq 0) {
   Write-Output "DONE"
   exit 0
 }
+
+$ours = @()
 foreach ($e in $entries) {
   Write-Output ("FOUND name=" + $e.Name + " value=" + $e.Value)
-  Write-Output ("  alreadyOurs=" + ($e.Value -match "workbuddy-skin-launcher\.vbs"))
+  $isOurs = ($e.Value -match "workbuddy-skin-launcher\.vbs")
+  Write-Output ("  alreadyOurs=" + $isOurs)
+  if ($isOurs) { $ours += $e } else { Write-Output ("NORMAL " + $e.Name) }
 }
-if ($Check) { Write-Output "DONE"; exit 0 }
 
-# ------------------------------------------------------------------- repoint
-$want    = New-LauncherValue
+if ($Check) { Write-Output "CHANGED 0"; Write-Output "DONE"; exit 0 }
+
+# ------------------------------------------------------------------ restore
 $changed = 0
-foreach ($e in $entries) {
-  if ($e.Value -match "workbuddy-skin-launcher\.vbs") {
-    Write-Output ("ALREADY-OURS name=" + $e.Name)
-    continue
-  }
+foreach ($e in $ours) {
   $safe = ($e.Name -replace '[\\/:*?"<>|]', '_')
   $bak  = Join-Path $backup ("hkcu-run-" + $safe + ".original.json")
   if (-not (Test-Path -LiteralPath $bak)) {
-    # JSON, NOT a hand-rolled two-line text file.
-    #
-    # The first version wrote @("name=" + $e.Name, "value=" + $e.Value) and that
-    # silently collapsed into ONE line: PowerShell binds "," tighter than "+",
-    # so the expression parsed as  "name=" + ($e.Name, "value=") + $e.Value  --
-    # the middle array stringified to "$e.Name value=" and "+" glued the value
-    # on. Result: "name=WorkBuddy.WorkBuddy value=D:\...\WorkBuddy.exe".
-    #
-    # That one line then broke the rollback path: it read the WHOLE line as the
-    # value NAME and wrote an empty value, leaving a junk entry in HKCU Run and
-    # reporting matches=True because "" -eq "". JSON has no separator to get
-    # wrong, so this class of bug cannot come back.
-    $json = [pscustomobject]@{ name = $e.Name; value = $e.Value } | ConvertTo-Json -Compress
-    Set-Content -LiteralPath $bak -Encoding UTF8 -Value $json
-    Write-Output ("BACKUP -> " + (Split-Path $bak -Leaf))
+    # We repointed it but kept no record of what it was. Do NOT guess at a
+    # replacement -- writing a made-up value into the user's autostart entry is
+    # worse than leaving it alone.
+    Write-Output ("RESTORE-NO-BACKUP name=" + $e.Name)
+    continue
   }
-  Set-ItemProperty -Path $runKey -Name $e.Name -Value $want
+  $rec = Get-Content -LiteralPath $bak -Raw | ConvertFrom-Json
+  if (([string]$rec.name) -ne $e.Name) {
+    # A name mismatch means the backup file belongs to a different entry.
+    # Refuse rather than restore the wrong thing.
+    Write-Output ("RESTORE-NAME-MISMATCH name=" + $e.Name)
+    continue
+  }
+  $orig = [string]$rec.value
+  Set-ItemProperty -Path $runKey -Name $e.Name -Value $orig
+  # Read back through the indexer: value names contain dots
+  # ("WorkBuddy.WorkBuddy"), and $obj.$name would parse as a property CHAIN
+  # and silently yield $null -- turning this read-back into a false negative.
   $back = [string](Get-ItemPropertyValue -Path $runKey -Name $e.Name)
-  Write-Output ("REPOINTED name=" + $e.Name + " nowPointsAtOurVbs=" + ($back -match "workbuddy-skin-launcher\.vbs"))
+  Write-Output ("RESTORED name=" + $e.Name + " matches=" + ($back -eq $orig))
   $changed++
 }
 Write-Output ("CHANGED " + $changed)

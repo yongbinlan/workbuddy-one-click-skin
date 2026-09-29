@@ -2,7 +2,7 @@
 /**
  * verify-launcher.mjs — 启动器回归验证（改主题/改启动器/升级应用后跑这个）
  *
- * 覆盖 13 项，每项都是"做了/没做"的可核判定，不看主观感受：
+ * 覆盖 14 项，每项都是"做了/没做"的可核判定，不看主观感受：
  *   1) .vbs / .ps1 纯 ASCII 且无 BOM —— wscript 与 PowerShell 5.1 按系统
  *                                      ANSI 码页解析无 BOM 的文件，非 ASCII 会炸
  *   2) launcher.mjs 语法            —— node --check
@@ -19,11 +19,13 @@
  *  12) tools/*.ps1 语法            —— param 必须位于首条语句，否则整个脚本解析不了
  *  13) 皮肤层：构建约定 + 自检判据（纯函数）—— 主题层缺席时必须报「主题层未注入」这个真因，
  *                                      而不是报一串"果"。纯函数、不碰 CDP、无副作用
+ *  14) 开机补注入链路                —— 启动文件夹入口只补注入、不启动应用；
+ *                                      进程内补注入留了可验的判据接缝；换壁纸已接自愈。无副作用
  *
  * 项数会被 README / SKILL.md 引用（写成「N 项自检」）。改这一行或加减检查段时，
  * 记得同步那些数字 —— 它们曾经写着 14，实际只有 12。
  *
- * 用法：node tools/verify-launcher.mjs             跑全部 13 项
+ * 用法：node tools/verify-launcher.mjs             跑全部 14 项
  *       node tools/verify-launcher.mjs --only=1,7  只跑第 1、7 项
  *       node tools/verify-launcher.mjs --list      列出各项编号
  * 退出码：0 = 全通过，1 = 有失败项
@@ -70,7 +72,7 @@ const no = (m) => { console.log("❌ " + m); fail.push(m); };
 // 排障时不必把 13 项全跑一遍 —— 第 6/9/10/11 项会动真实环境（改主题包名、
 // 重建选择器、拉起界面、真跑 .cmd）。哪一环坏了就单跑哪一项，快且副作用最小。
 // 另：第 1 项这种纯文件检查在 CI / 无图形环境里也能单跑。
-const TOTAL = 13;
+const TOTAL = 14;
 const ONLY = (() => {
   const a = process.argv.slice(2).find((x) => x.startsWith("--only="));
   if (!a) return null;
@@ -125,7 +127,7 @@ if (!CAN_SPAWN) {
   console.log(`⚠️  本环境起不了子进程（${why}）。`);
   console.log("    下面这几项**根本没跑** —— 它们的 ❌ 不是真实故障，请勿照着修：");
   console.log("      " + affected.map((n) => `${n} ${CHILD_DEPENDENT[n]}`).join(" ｜ "));
-  console.log("    真正做了判断的是不依赖子进程的那些：1 / 3 / 7 / 12 / 13（第 2、8 项会自报「未判」）。");
+  console.log("    真正做了判断的是不依赖子进程的那些：1 / 3 / 7 / 12 / 13 / 14（第 2、8 项会自报「未判」）。");
   console.log("");
 }
 
@@ -144,6 +146,7 @@ if (process.argv.includes("--list")) {
     "11  .cmd 可执行性（会真跑一遍）",
     "12  tools/*.ps1 语法",
     "13  皮肤层：构建约定 + 自检判据（纯函数，无副作用）",
+    "14  开机补注入链路（启动文件夹入口 + 进程内补注入，无副作用）",
   ].forEach((l) => console.log(l));
   console.log("\n用法：node tools/verify-launcher.mjs [--only=1,7] [--list]");
   process.exit(0);
@@ -509,9 +512,19 @@ if (want(12)) {
   }
 
   console.log(`12) tools/*.ps1 共 ${files.length} 个 ｜ 解析校验 ${parsed}`);
-  bad.length === 0
-    ? ok(`${files.length} 个 ps1 语法通过（param 均位于首条语句）`)
-    : no("ps1 会被 PowerShell 拒绝解析，建/改快捷方式时会炸：" + bad.join(" / "));
+  if (bad.length) {
+    no("ps1 会被 PowerShell 拒绝解析，建/改快捷方式时会炸：" + bad.join(" / "));
+  } else if (parsed.startsWith("跳过")) {
+    /*
+     * 这里**不能**打 ✅。上面只做了静态判断（param 在不在首条语句），
+     * PowerShell 真解析那一步根本没跑 —— 打 ✅ 就是在宣称"语法通过"，
+     * 而有一半判据其实从未执行。这正是本项目反复吃亏的「假门禁」：
+     * 报告说通过，实际没跑。跳过就明说跳过（2026-09-29 修）。
+     */
+    ok(`param 位置静态检查通过 ｜ PowerShell 真解析${parsed}`);
+  } else {
+    ok(`${files.length} 个 ps1 语法通过（param 均位于首条语句）`);
+  }
 }
 
 // ---------- 13) 皮肤层自检判据（纯函数） ----------
@@ -614,18 +627,37 @@ if (want(13)) {
     const wrong = cases.filter((c) =>
       c.must.some((m) => !c.got.includes(m)) || c.mustNot.some((m) => c.got.includes(m)));
 
-    /* 附加 1：主题层缺席时，notes 必须给出**可执行**的下一步，而不只是说"坏了" */
+    /*
+     * 附加 1：主题层缺席时，notes 必须给出**可执行**的下一步，而不只是说"坏了"。
+     *
+     * 2026-09-29 更新：这条断言原来要求 notes 里出现 `_repoint-startup.ps1`
+     * （把 WorkBuddy 的开机自启项改指向我们的启动器）。那条路**已被证伪**：
+     * 应用每次启动都会跑 reconcileOnStartup() -> setLoginItemSettings()，
+     * 把那个值重写回自己的 exe。所以指引改成「补注入走启动文件夹的独立入口」。
+     *
+     * mustNot 里那条同样是回归保护：**不许**再把 `_repoint-startup.ps1`
+     * 当成解决方案写进提示 —— 那会把人送回已经走过一次的错路。
+     */
     const notes = checkWallpaperState(st({ hostClassPresent: false }), { imagePath: "a.jpg" }).notes.join("\n");
-    const actionable = notes.includes("注入皮肤.cmd") && notes.includes("_repoint-startup.ps1");
-    if (!actionable) wrong.push({ why: "主题层缺席时没给出可执行的补救", got: notes, must: [], mustNot: [] });
+    const actionable =
+      notes.includes("注入皮肤.cmd") &&
+      notes.includes("_install-startup-entry.ps1") &&
+      !notes.includes("_repoint-startup.ps1");
+    if (!actionable) wrong.push({ why: "主题层缺席时没给出当前正确的补救（应指 注入皮肤.cmd + _install-startup-entry.ps1，且不得再指 _repoint-startup.ps1）", got: notes, must: [], mustNot: [] });
 
-    /* 附加 2：报遮挡时必须指到改哪里（GLASS_SELECTORS），否则用户只知道坏了 */
+    /*
+     * 附加 2：报遮挡时必须**分清两类容器**，否则用户只知道坏了。
+     *
+     * 2026-09-24 的教训：先按「结构面」把它玻璃化了，结果它是满屏的祖先容器，
+     * 一加毛玻璃就把整个视口糊掉（用户评价「越改越差」）。所以提示里必须
+     * 同时出现两组名单名，逼着改的人先做面积判断。
+     */
     const occlNotes = checkWallpaperState(
       st({ occluders: [{ sel: "div.x", areaPct: 97, bg: "rgb(20, 20, 20)" }] }),
       { imagePath: "a.jpg" }
     ).notes.join("\n");
-    if (!occlNotes.includes("GLASS_SELECTORS")) {
-      wrong.push({ why: "报遮挡时没指到 GLASS_SELECTORS（用户不知道该改哪）", got: occlNotes, must: [], mustNot: [] });
+    if (!occlNotes.includes("GLASS_SELECTORS") || !occlNotes.includes("CLEAR_SELECTORS")) {
+      wrong.push({ why: "报遮挡时没同时指到 CLEAR_SELECTORS 与 GLASS_SELECTORS（用户无从判断该归哪一类）", got: occlNotes, must: [], mustNot: [] });
     }
 
     /*
@@ -673,6 +705,111 @@ if (want(13)) {
       : no("自检判据回归了：" + wrong.map((c) =>
           `${c.why}【实报：${c.got || "(无)"}】`).join(" / "));
   }
+}
+
+// ---------- 14) 开机补注入链路（启动文件夹入口 + 进程内补注入） ----------
+if (want(14)) {
+  /*
+   * 这一项守的是 2026-09-29 那次**复发**故障的修法。
+   *
+   * 原来那条修法（_repoint-startup.ps1：把 WorkBuddy 自己的开机自启项改指向
+   * 我们的启动器）已被证伪。应用每次启动都会跑
+   *   auto-launch-controller.ts: reconcileOnStartup() -> getEnabled()
+   *   -> enableCurrentBundleAutoLaunch() -> app.setLoginItemSettings({openAtLogin:true})
+   * 把那个值重写回自己的 exe —— 三条分支殊途同归，全都落到同一次写入。
+   * 所以「接管自启项」只能撑到应用下一次启动：09-24 改的，09-27 应用一起
+   * 就被改回去，09-28 就已经复发（应用日志 openAtLogin:true 而启动器无记录）。
+   *
+   * 新方案两条腿，缺一条都会回到老毛病：
+   *   ① tools\_install-startup-entry.ps1 —— 在**「启动」文件夹**放一个独立入口。
+   *      那个位置应用不管，抢不走。它只补注入、**不启动应用** ——
+   *      要不要开机自启是用户的决定，我们不去替他打开。
+   *   ② tools\ensure-theme.mjs —— 随时可调的补注入（进程内直调 CodeDrobe 库，
+   *      不起子进程，所以不受 spawn 被拦的影响）。换壁纸时若发现主题层不在，
+   *      set-wallpaper.mjs 会调它自愈。
+   *
+   * 本项**不碰 CDP、不起子进程、无副作用**，CI 与受限环境里都能跑。
+   */
+  const bad = [];
+
+  const ps1 = path.join(ROOT, "tools", "_install-startup-entry.ps1");
+  if (!fs.existsSync(ps1)) {
+    bad.push("缺 tools\\_install-startup-entry.ps1（开机补注入入口的安装器）");
+  } else {
+    const b = fs.readFileSync(ps1);
+    const bom = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+    let nonAscii = 0;
+    for (let i = bom ? 3 : 0; i < b.length; i++) if (b[i] > 127) nonAscii++;
+    if (bom) bad.push("_install-startup-entry.ps1 带 BOM（PowerShell 5.1 按 GBK 读无 BOM 文件，带 BOM 会解析失败）");
+    if (nonAscii) bad.push(`_install-startup-entry.ps1 含 ${nonAscii} 个非 ASCII 字节（PS 5.1 会按 GBK 解成乱码路径）`);
+    // param() 必须是首条语句，否则 PowerShell 会把括号当命令调用，整个脚本作废
+    const firstLine = b.toString("latin1").split("\n").map((l) => l.replace(/\r$/, ""))[0] || "";
+    if (!/^\s*param\s*\(/.test(firstLine)) {
+      bad.push("_install-startup-entry.ps1 的 param() 不在首条语句（整个脚本会解析不了）");
+    }
+  }
+
+  const etPath = path.join(ROOT, "tools", "ensure-theme.mjs");
+  if (!fs.existsSync(etPath)) bad.push("缺 tools\\ensure-theme.mjs（补注入模块）");
+  else {
+    const et = await import(pathToFileURL(etPath).href).catch((e) => ({ __err: e }));
+    if (et.__err) bad.push("ensure-theme.mjs 加载失败：" + et.__err.message);
+    else {
+      if (typeof et.ensureTheme !== "function") bad.push("ensure-theme.mjs 没有导出 ensureTheme");
+      if (typeof et.hasHostClass !== "function") bad.push("ensure-theme.mjs 没有导出 hasHostClass");
+      /*
+       * 判据接缝必须留着。CodeDrobe 的载荷自带 MutationObserver + 每 5 秒一次的
+       * setInterval 兜底，所以「人为摘掉宿主类」这个故障模拟撑不过几秒 ——
+       * 没有接缝，注入分支就永远只能走快路径，等于没验过。
+       */
+      if (!/probeHostClass\s*=/.test(fs.readFileSync(etPath, "utf8"))) {
+        bad.push("ensureTheme 少了 probeHostClass 判据接缝 —— 注入分支将无法独立验证");
+      }
+    }
+  }
+
+  /* 换壁纸的自愈必须**真的接上**：只 import 不调用，等于没接。 */
+  const swPath = path.join(ROOT, "tools", "set-wallpaper.mjs");
+  const sw = fs.existsSync(swPath) ? fs.readFileSync(swPath, "utf8") : "";
+  if (!sw) bad.push("缺 tools\\set-wallpaper.mjs");
+  else {
+    if (!/from\s+"\.\/ensure-theme\.mjs"/.test(sw)) bad.push("set-wallpaper.mjs 没有引用 ensure-theme.mjs（换壁纸不会自愈）");
+    if (!/await\s+ensureTheme\s*\(/.test(sw)) bad.push("set-wallpaper.mjs 里没有调用 ensureTheme（只是 import 了没用）");
+  }
+
+  /*
+   * 本机装了启动入口才验它的内容。
+   *
+   * 「本机没装」与「装了但内容不对」必须分得开：前者跳过并**明说跳过**，
+   * 后者才是真故障。悄悄算通过是这一项最容易退化成假门禁的方式。
+   */
+  const startupDir = path.join(HOME, "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+  const entry = path.join(startupDir, "WorkBuddySkinAutoInject.vbs");
+  let entryNote = "（本机未装启动文件夹入口，这一小项跳过）";
+  if (fs.existsSync(entry)) {
+    const t = fs.readFileSync(entry, "latin1"); // 按字节读，ASCII 判据不受编码影响
+    if (!/launcher\.mjs/.test(t)) bad.push("启动入口没有指向 launcher.mjs");
+    if (!/--no-launch/.test(t)) bad.push("启动入口缺 --no-launch（会去启动应用，等于替用户打开开机自启）");
+    if (/workbuddy-skin-launcher\.vbs/.test(t)) {
+      bad.push("启动入口指向了 workbuddy-skin-launcher.vbs —— 那个启动器会拉起 WorkBuddy，违反「不替用户决定开机自启」");
+    }
+    /*
+     * 写进去的绝对路径必须真的存在：只查字符串是查表象，不查主体。
+     *
+     * ⚠️ 字符类里**不能**排除反斜杠。第一版写的 [^"\\]+ 把
+     * `"E:\...\launcher.mjs"` 整条排除了 —— 于是断言永远报"找不到路径"，
+     * 而生成的入口其实完全正确。查路径的正则把路径字符排除掉，这类错很隐蔽。
+     */
+    const lits = [...t.matchAll(/"([^"\r\n]*)"/g)].map((m) => m[1]).filter((s) => /^[A-Za-z]:[\\/]/.test(s));
+    const lit = lits.find((s) => /launcher\.mjs$/.test(s));
+    if (!lit) bad.push("启动入口里找不到 launcher.mjs 的绝对路径");
+    else if (!fs.existsSync(lit)) bad.push(`启动入口里写死的路径已失效：${lit}（工程被挪过？重跑一次安装器）`);
+    entryNote = "（本机入口：指向存在的 launcher.mjs、且不含启动器 vbs ✅）";
+  }
+
+  bad.length === 0
+    ? ok("补注入链路完整：启动文件夹入口只补注入不启动应用、进程内补注入可验、换壁纸已接自愈 " + entryNote)
+    : no("开机补注入链路有问题：" + bad.join(" / "));
 }
 
 console.log("\n================ 结果 ================");

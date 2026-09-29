@@ -33,19 +33,27 @@
 rem 1. 展开工程（把 <仓库目录> 换成你 clone 下来的路径）
 node <仓库目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 
-rem 2. 自检，13 项全绿才算装好
+rem 2. 自检，14 项全绿才算装好
 node D:\my\workbuddy-skin\tools\verify-launcher.mjs
 
 rem 3. 注入皮肤（WorkBuddy 需要在运行）
 双击 D:\my\workbuddy-skin\launcher\注入皮肤.cmd
 ```
 
-**还想让皮肤每次开机自己回来**：把桌面 / 开始菜单里的 WorkBuddy 快捷方式指向
-`launcher\workbuddy-skin-launcher.vbs`。你原来的那个会自动备份到 `backup\`，随时能还原。
+**还想让皮肤每次开机自己回来**：做两件事 ——
+
+1. 把桌面 / 开始菜单里的 WorkBuddy 快捷方式指向
+   `launcher\workbuddy-skin-launcher.vbs`。你原来的那个会自动备份到 `backup\`，随时能还原。
+2. 在系统的「启动」文件夹放一个补注入入口（初始化脚本默认就会装）。
+   因为皮肤只活在应用内存里，重启就丢 —— 这个入口在登录后补一次。
 
 > 初始化脚本按顺序做这些事：找到 WorkBuddy 装在哪 → 展开工程 → 生成 `env.cmd`
-> → 生成壁纸选择器（连图标一起）→ 打包主题 → 装一张默认壁纸。
+> → 生成壁纸选择器（连图标一起）→ 打包主题 → 装一张默认壁纸 → 装开机补注入入口。
 > 每一步都告诉你它干了什么、跳过了什么。
+>
+> **它不会碰 WorkBuddy 自己的「开机自启」开关。** 那条记录由应用每次启动自己重写，
+> 改了也留不住（为什么见 `template\README.md` 的「架构」一节）。
+> 要不要开机自启是你的决定，脚本不会替你打开。
 >
 > WorkBuddy 装在比较偏的位置它也能认出来；实在认不出来，加 `--app "C:\...\WorkBuddy.exe"` 指一次。
 
@@ -136,7 +144,7 @@ rem 3. 注入皮肤（WorkBuddy 需要在运行）
 ├── SKILL.md                  ← 给 AI Agent 读的操作手册（人也能看）
 ├── scripts\
 │   └── init.mjs              ← 一键初始化：展开工程 + 探测本机 + 生成产物
-├── template\                 ← 展开到用户机器上的工程模板（38 个文件）
+├── template\                 ← 展开到用户机器上的工程模板（40 个文件）
 │   ├── launcher\             ← 你唯一需要碰的目录（全是双击）
 │   ├── tools\                ← 全部脚本
 │   ├── themes\               ← 主题源（改配色改这里）
@@ -191,7 +199,7 @@ node <仓库目录>\scripts\init.mjs --dest <已有工程> --upgrade
 | 提示「主题包不存在」 | `build\` 下面没有 `.codedrobe-theme` → 重跑 `init.mjs --upgrade` |
 | 皮肤注入了但界面没变 | 跑 `node tools\cdp-probe.mjs` 看 `targets` 数量（可能是打到另一个窗口上了） |
 | 换了壁纸却看不见壁纸 | 把档位调到「淡」，或者跑 `node tools\diag-occluders.mjs` |
-| 重启之后皮肤没了 | 快捷方式没指向启动器 → 照「一键装好」重新指一次 |
+| 重启之后皮肤没了 | ① 快捷方式没指向启动器 → 照「一键装好」重新指一次；② 「启动」文件夹的补注入入口没装 → `powershell -File tools\_install-startup-entry.ps1` |
 | 壁纸选择器打开是空的 | 壁纸库里还没图 → 用 `换壁纸.cmd` 拖一张进去 |
 | 找不到 WorkBuddy 装在哪 | `init.mjs --app "C:\...\WorkBuddy.exe"` 指一次 |
 
@@ -201,7 +209,7 @@ node <仓库目录>\scripts\init.mjs --dest <已有工程> --upgrade
 node <工程>\tools\verify-launcher.mjs
 ```
 
-13 项自检，会直接告诉你哪一环坏了。
+14 项自检，会直接告诉你哪一环坏了。
 
 闲时不必全跑 —— 第 6 / 9 / 10 / 11 项会动真实环境（临时改主题包名、重建选择器、
 拉起界面、真跑一遍 `.cmd`）。哪一环坏了就单跑哪一项，快，而且动静最小：
@@ -209,7 +217,7 @@ node <工程>\tools\verify-launcher.mjs
 ```bat
 node <工程>\tools\verify-launcher.mjs --list              rem 看各项编号
 node <工程>\tools\verify-launcher.mjs --only=1,7          rem 只跑第 1、7 项
-node <工程>\tools\verify-launcher.mjs --only=1,2,3,5,7,8,12   rem 只做静态检查
+node <工程>\tools\verify-launcher.mjs --only=1,2,3,5,7,8,12,14   rem 只做静态检查
 ```
 
 ---
