@@ -136,9 +136,11 @@ const GLASS_SELECTORS = [
 /**
  * 页面级外壳清单 —— **直接清成透明，并且不给毛玻璃**。
  *
- * 目前只有一条：「工作区 / 团队」网格视图的滚动容器。
+ * 网格视图的滚动容器（工作区 / 团队 / 技能 / 定时任务 / 资料库 等）。
  * 实测 1920×1020 = **97.1% 视口**、rgb(20,20,20) **完全不透明** —— 它一挡，
- * 壁纸在整个屏幕上一点都看不到（2026-09-24 用户报「提示已生效但皮肤没变」的真凶）。
+ * 壁纸在整个屏幕上一点都看不到（2026-09-24 用户报「提示已生效但皮肤没变」的真凶；
+ * 2026-10-12 复发：应用改版把旧类名 .teams-grid-scroll-content 换成了 CSS Modules 的
+ * _gridView_<hash>，hash 随版本变 → 用 div[class*="_gridView_"] 通配兜底）。
  *
  * **为什么不能按玻璃面处理**（试过，结果比不修更糟）：
  *   ① 它是**满屏的祖先容器**，加 backdrop-filter 会把**整个视口**的壁纸糊掉；
@@ -151,7 +153,9 @@ const GLASS_SELECTORS = [
  *    自检的 occluders 采样专门盯它们（见 checkWallpaperState）。
  */
 const CLEAR_SELECTORS = [
-  ".teams-grid-scroll-content",
+  ".teams-grid-scroll-content", // 2026-09-24 实测（旧版类名；新版已 CSS Modules 化 → 由下条通配接管）
+  'div[class*="_gridView_"]',   // 2026-10-12 复发实测：网格视图页面级外壳，97% 视口完全不透明。
+                               // 类名带打包 hash（实测 _gridView_11lon_9），hash 随版本变 → 必须通配。
 ];
 
 
