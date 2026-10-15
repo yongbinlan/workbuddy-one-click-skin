@@ -360,6 +360,14 @@ function trim(s) { return String(s).replace(/^\s+|\s+$/g, ""); }
 function ntv(p) { return String(p).replace(/\//g, "\\"); }
 // 反斜杠换成 /，凑成 file:/// 开头的 URL
 function fileUrl(p) { return "file:///" + String(p).replace(/\\/g, "/"); }
+// 同名换扩展名：.png <-> .jpg / .jpeg。只有那个文件真的存在才返回，否则给空串。
+// 用途见缩略图那段：扩展名与实体不符时（JPEG 被命名成 .png 之类）拿它兜一层。
+function altImagePath(p) {
+  var m = /^(.*)\.(png|jpe?g)$/i.exec(String(p));
+  if (!m) return "";
+  var alt = m[1] + (m[2].charAt(0).toLowerCase() === "p" ? ".jpg" : ".png");
+  try { return fso().FileExists(ntv(alt)) ? alt : ""; } catch (e) { return ""; }
+}
 function quote(s) { return '"' + s + '"'; }
 
 function delIf(p) {
@@ -1174,7 +1182,19 @@ function cardFor(item, idx, st, mode, libIdx) {
   };
 
   var img = document.createElement("img");
+  // 扩展名与实体不符的图在这里必然失败 —— MSHTML 是按扩展名挑解码器的，不看魔数。
+  // （典型：JPEG 被命名成 .png，缩略图位就一直是「无缩略图」。）所以第一次失败
+  // 先别认输：退回同名的另一种图片扩展名再试一次；没有那个文件、或它也失败，
+  // 才落到下面打「无缩略图」。
+  // 实测（探针 HTA，IE=edge + file:// 同一路径）：同一个 <img> 重赋 src 有效，
+  // 且正常图片走这套代码不会被误伤。
+  var triedAlt = false;
   img.onerror = function () {
+    if (!triedAlt) {
+      triedAlt = true;
+      var alt = altImagePath(item.path);
+      if (alt) { img.src = fileUrl(alt); return; }
+    }
     var miss = document.createElement("div");
     miss.className = "thumb-miss";
     miss.appendChild(document.createTextNode(T.noPreview));
