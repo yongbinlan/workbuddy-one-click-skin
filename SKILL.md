@@ -58,11 +58,11 @@ node <本skill目录>\scripts\init.mjs --dest D:\my\workbuddy-skin
 它会依次做完这些事，每一步都打印做了什么：
 
 1. **探测本机环境** —— node、WorkBuddy 主程序、CodeDrobe CLI
-2. **展开工程** —— 把 `template/` 铺到目标目录（40 个文件，已剔除本机专属项）
+2. **展开工程** —— 把 `template/` 铺到目标目录（46 个文件，已剔除本机专属项）
 3. **生成 `launcher\env.cmd`** —— 本机路径落在这一份文件里
 4. **构建壁纸选择器** —— 生成 `launcher\壁纸选择器.hta`（纯 ASCII 产物）
 5. **构建主题包** —— `build\<主题id>-<版本>.codedrobe-theme`
-6. **装一张默认壁纸** —— 壁纸库空时用主题自带的 hero 图打底，避免开箱是一片空白
+6. **补齐四张默认壁纸** —— 自带四张 JPEG 风景壁纸，首次打开即可预览；保留已有图片与当前选择
 7. **给壁纸选择器配一个带图标的入口** —— 在 `launcher\` 里生成 `壁纸选择器.lnk`
    （`.hta` 的文件图标由 Windows 的**扩展名关联**决定，与文件内容无关，详见 §7.10.1。
    这一步失败不致命：没有快捷方式时双击 `.hta` 一切照旧，只是图标是系统默认的）
@@ -909,7 +909,8 @@ ICON 属性的排查经过（都不是猜的）：
 │   ├── workbuddy.css         （自动生成，勿手改）
 │   └── assets\
 │       ├── legacy-skin-workbuddy.css   ← 改配色改这里
-│       └── hero.webp                   （主题自带图，同时用作默认壁纸）
+│       └── hero.webp                   （主题自带图）
+├── default-wallpapers\       ← 套装自带的四张默认壁纸（构建时补进 wallpapers\）
 ├── build\                    ← 主题包产物
 ├── wallpapers\               ← 壁纸库 + current.json
 ├── backup\                   ← 原始快捷方式的备份（还原用）

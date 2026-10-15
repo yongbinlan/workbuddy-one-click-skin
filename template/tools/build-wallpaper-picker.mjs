@@ -32,6 +32,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 
+import { seedDefaultWallpapers } from './seed-default-wallpapers.mjs';
+
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dir, "..");
 const TPL = path.join(__dir, "picker.template.hta");
@@ -59,6 +61,9 @@ const fail = (title, lines = []) => {
   lines.forEach((l) => console.error("   · " + l));
   process.exit(1);
 };
+
+const defaults = seedDefaultWallpapers(ROOT);
+console.log('【默认壁纸】补入 ' + defaults.added.length + ' 张 JPEG；保留已有图片与当前选择');
 
 // ---------------------------------------------------------------------------
 // 1. 读模板

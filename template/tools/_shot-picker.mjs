@@ -13,7 +13,7 @@
  *   所以分工是：node 负责拉起与收尸，PowerShell 只负责看和截。
  *
  * 注意：文件名不能带宿主程序的字样（bash 按命令文本静态扫，会被拒）。
- * 注意：产物是要进公开仓库的，脚本默认只允许拍 demo-* 合成演示库；
+ * 注意：产物是要进公开仓库的，脚本默认只允许拍 demo-* / default-* 合成演示库；
  *   要拍真实壁纸库必须显式加 --i-know（见下面那段隐私闸）。
  * 用完即可删除。
  */
@@ -42,21 +42,23 @@ if (!fs.existsSync(OUT)) { console.log("✗ 产物不存在：" + OUT); process.
  *   template/docs/ 只有一步，差一点就随 commit 推上去。
  *
  *   所以规矩改成：「先把自己要发布的东西打印出来」，再决定拍不拍。
- *   壁纸库不是 demo-* 合成演示图时，必须显式 --i-know 才继续。
- *   —— 已经发布的那两张图里的 demo-01..04，就是这么来的。
+ *   壁纸库不是 demo-* / default-* 合成演示图时，必须显式 --i-know 才继续。
+ *   —— 已经发布的那两张图里的 demo-01..04，就是这么来的；
+ *   现在换成套装自带的 default-01..04，同一道闸照样放行。
  */
 const LIB = path.join(ROOT, "wallpapers");
 const IMG_RE = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
 let libNames = [];
 try { libNames = fs.readdirSync(LIB).filter((f) => IMG_RE.test(f)); } catch { /* 库不存在 */ }
-const isFixture = libNames.length > 0 && libNames.every((f) => /^demo-\d/i.test(f));
+const FIXTURE_RE = /^(?:demo|default)-\d/i;
+const isFixture = libNames.length > 0 && libNames.every((f) => FIXTURE_RE.test(f));
 const forced = process.argv.includes("--i-know");
 
 console.log(`（这张截图里会出现的壁纸文件名，共 ${libNames.length} 个）`);
 libNames.forEach((n) => console.log("    " + n));
 if (!isFixture && !forced) {
   console.log("");
-  console.log("✗ 壁纸库不是 demo-* 合成演示图，拒绝截图。");
+  console.log("✗ 壁纸库不是 demo-* / default-* 合成演示图，拒绝截图。");
   console.log("  理由：产物是要进公开仓库的，上面列出的每一条都是本机私有内容。");
   console.log("  正确做法：临时把壁纸库换成合成演示图，拍完再换回来。");
   console.log("  确实要用真实库（只在本机留证、绝不外发）：加参数 --i-know");

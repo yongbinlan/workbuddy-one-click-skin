@@ -294,42 +294,7 @@ if (!THEME_DIR) {
   console.log();
 }
 
-// ---------------------------------------------------------------- 默认壁纸
-// 新工程壁纸库是空的。空库不算坏，但选择器打开是一片空白，用户会以为坏了。
-// 主题自带的 hero 图正好可以当第一张 —— 开箱即有图，且不必多带一份文件。
-const LIB = path.join(DEST, "wallpapers");
-const IMG_RE = /\.(jpe?g|png|webp|gif|bmp|avif)$/i;
-const libImages = (() => { try { return fs.readdirSync(LIB).filter((f) => IMG_RE.test(f)); } catch { return []; } })();
-
-if (libImages.length === 0 && THEME_DIR) {
-  const assets = path.join(THEME_DIR, "assets");
-  let hero = "";
-  try { hero = fs.readdirSync(assets).filter((f) => IMG_RE.test(f)).sort()[0] || ""; } catch { /* 没图片 */ }
-  if (hero && fs.existsSync(path.join(DEST, "tools", "set-wallpaper.mjs"))) {
-    console.log("【装一张默认壁纸】壁纸库是空的，先用主题自带的图打底");
-    /*
-     * 端口隔离：这一步的语义只是「给这个新展开的工程记一个默认壁纸」，
-     * 绝不能去动用户机器上正在运行的真实应用。
-     *
-     * 但 CDP 端口是全局的（SKIN_PORT 缺省 9342），不隔离的后果是：
-     * 在临时目录里跑初始化，会把这份副本的皮肤层注入到用户正在用的
-     * WorkBuddy 上 —— 2026-09-18 实测踩到过（临时目录的 hero.webp 盖掉了
-     * 用户自己选的壁纸，而两个 current.json 各说各话，极难排查）。
-     *
-     * 指向一个必然连不上的端口，让它走「已记录，下次启动生效」这条正常分支：
-     * 状态照样落盘，但不碰任何正在运行的应用。
-     */
-    const r = spawnSync(NODE,
-      [path.join(DEST, "tools", "set-wallpaper.mjs"), "add", path.join(assets, hero), "中"],
-      { encoding: "utf8", cwd: DEST, windowsHide: true, env: { ...process.env, SKIN_PORT: "1" } });
-    const out = ((r.stdout || "") + (r.stderr || "")).trim();
-    // 退出码 3 = 端口不通，但状态已记录，下次启动自动生效 —— 对初始化来说算成功
-    if (r.status === 0) console.log("  ✅ 已设为当前壁纸（中档）");
-    else if (r.status === 3) console.log("  ✅ 已记录为默认壁纸（不打扰当前运行中的应用，下次启动自动生效）");
-    else { console.log("  ⚠️ 退出码 " + r.status); process.stdout.write(out.replace(/^/gm, "     ")); }
-    console.log();
-  }
-}
+// 默认 JPEG 壁纸由 build-wallpaper-picker.mjs 幂等补齐；已有 current.json 不覆盖。
 
 // ------------------------------------------------- 壁纸选择器入口（带图标）
 // 为什么需要这一步：.hta 在资源管理器里显示什么图标，由 Windows 的**扩展名关联**

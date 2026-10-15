@@ -1,0 +1,28 @@
+import {strict as assert} from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {seedDefaultWallpapers, DEFAULTS} from '../template/tools/seed-default-wallpapers.mjs';
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'workbuddy-defaults-'));
+const first=seedDefaultWallpapers(root);
+assert.equal(first.added.length,4);assert.equal(first.selected,true);
+const lib=path.join(root,'wallpapers');
+const state=fs.readFileSync(path.join(lib,'current.json'));
+assert.equal(path.basename(JSON.parse(state).path),DEFAULTS[0]);
+assert.equal(seedDefaultWallpapers(root).added.length,0);
+assert.deepEqual(fs.readFileSync(path.join(lib,'current.json')),state);
+// Existing files with a colliding name, and the user's selection, remain byte-identical.
+const custom=Buffer.from('user picture sentinel');
+fs.writeFileSync(path.join(lib,DEFAULTS[1]),custom);
+fs.writeFileSync(path.join(lib,'我的照片.jpg'),custom);
+const selected=Buffer.from(JSON.stringify({path:path.join(lib,'我的照片.jpg'),preset:'strong',disabled:true}));
+fs.writeFileSync(path.join(lib,'current.json'),selected);
+seedDefaultWallpapers(root);
+assert.deepEqual(fs.readFileSync(path.join(lib,DEFAULTS[1])),custom);
+assert.deepEqual(fs.readFileSync(path.join(lib,'我的照片.jpg')),custom);
+assert.deepEqual(fs.readFileSync(path.join(lib,'current.json')),selected);
+const existing=path.join(root,'existing');fs.mkdirSync(path.join(existing,'wallpapers'),{recursive:true});
+fs.writeFileSync(path.join(existing,'wallpapers','user.png'),custom);
+assert.equal(seedDefaultWallpapers(existing).selected,false);
+assert.equal(fs.existsSync(path.join(existing,'wallpapers','current.json')),false);
+console.log('PASS: empty library, default selection, idempotence, name collision, Unicode user image, custom state/preset, existing library without state');
